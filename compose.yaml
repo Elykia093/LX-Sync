@@ -1,0 +1,58 @@
+services:
+  db:
+    image: postgres:18.4-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: lx_sync
+      POSTGRES_USER: lx_sync
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lx_sync -d lx_sync"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  app:
+    image: lx-sync:0.1.0
+    build:
+      context: .
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "${PORT:-9527}:9527"
+    environment:
+      NODE_ENV: ${NODE_ENV:-production}
+      HOST: 0.0.0.0
+      PORT: 9527
+      SERVER_NAME: ${SERVER_NAME:-LX Sync}
+      DATABASE_URL: postgresql://lx_sync:${POSTGRES_PASSWORD}@db:5432/lx_sync
+      MASTER_KEY: ${MASTER_KEY:?set MASTER_KEY in .env}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:?set ADMIN_PASSWORD in .env}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-24}
+      MAX_SNAPSHOTS: ${MAX_SNAPSHOTS:-10}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:9527}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9527/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  postgres-data:

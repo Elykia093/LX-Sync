@@ -1,0 +1,14 @@
+LX Sync
+Copyright 2026 Elykia093
+
+This product implements behavior compatible with the LX Music synchronization
+protocol by reference to lx-music-sync-server, licensed under the Apache
+License, Version 2.0:
+https://github.com/lyswhut/lx-music-sync-server
+
+This product includes message2call, licensed under the MIT License:
+https://github.com/lyswhut/message2call
+
+LX Music names and related marks belong to their respective owners. This
+project is an independent, unofficial implementation and is not endorsed by
+the upstream project.

@@ -1,0 +1,13 @@
+diff --git a/types/common.d.ts b/types/common.d.ts
+index b17d926..0a4169d 100644
+--- a/types/common.d.ts
++++ b/types/common.d.ts
+@@ -12,7 +12,7 @@ export declare interface Options {
+   /**
+    * on call error hook
+    */
+-  onError?: (err: Error, path: string[], groupName: string | null) => viod
++  onError?: (err: Error, path: string[], groupName: string | null) => void
+   /**
+    * call timeout
+    */

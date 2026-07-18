@@ -71,6 +71,17 @@ export class ApiError extends Error {
   }
 }
 
+export const sessionExpiredEventName = 'lx-sync:session-expired'
+
+export function shouldExpireSession(path: string, error: ApiError): boolean {
+  return path !== '/auth/login' && error.status === 401
+}
+
+function notifySessionExpired(path: string, error: ApiError): void {
+  if (typeof window === 'undefined' || !shouldExpireSession(path, error)) return
+  window.dispatchEvent(new Event(sessionExpiredEventName))
+}
+
 async function request<T>(
   path: string,
   schema: z.ZodType<T>,
@@ -85,7 +96,11 @@ async function request<T>(
       ...init?.headers,
     },
   })
-  if (!response.ok) throw await responseError(response)
+  if (!response.ok) {
+    const error = await responseError(response)
+    notifySessionExpired(path, error)
+    throw error
+  }
   return schema.parse(await response.json())
 }
 
@@ -99,7 +114,11 @@ async function requestVoid(path: string, init: RequestInit): Promise<void> {
       ...init.headers,
     },
   })
-  if (!response.ok) throw await responseError(response)
+  if (!response.ok) {
+    const error = await responseError(response)
+    notifySessionExpired(path, error)
+    throw error
+  }
 }
 
 async function responseError(response: Response): Promise<ApiError> {

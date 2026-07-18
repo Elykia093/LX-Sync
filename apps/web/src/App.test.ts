@@ -1,7 +1,7 @@
 import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
 import { applyLoggedOutState, queryKeys, sessionLoginError } from './App.js'
-import { ApiError, type Session } from './api.js'
+import { ApiError, type Session, shouldExpireSession } from './api.js'
 
 describe('applyLoggedOutState', () => {
   it('removes protected cache data and exposes an explicit logged-out state', () => {
@@ -31,5 +31,15 @@ describe('applyLoggedOutState', () => {
       sessionLoginError(new ApiError(500, 'INTERNAL_ERROR', 'Failed')),
     ).toBeNull()
     expect(sessionLoginError(new Error('Network failed'))).toBeNull()
+  })
+
+  it('expires cached sessions only for protected unauthorized requests', () => {
+    const unauthorized = new ApiError(401, 'AUTH_INVALID', 'Unauthorized')
+    const forbidden = new ApiError(403, 'ORIGIN_INVALID', 'Forbidden')
+
+    expect(shouldExpireSession('/status', unauthorized)).toBe(true)
+    expect(shouldExpireSession('/auth/session', unauthorized)).toBe(true)
+    expect(shouldExpireSession('/auth/login', unauthorized)).toBe(false)
+    expect(shouldExpireSession('/status', forbidden)).toBe(false)
   })
 })

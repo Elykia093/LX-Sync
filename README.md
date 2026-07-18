@@ -32,16 +32,16 @@ flowchart LR
 
 ## 技术栈
 
-以下版本按 2026-07-17 的稳定/LTS 线精确锁定，不追 Current、RC 或 nightly：
+以下版本按 2026-07-18 的稳定/LTS 线精确锁定，不追 Current、RC 或 nightly：
 
 | 层 | 版本 |
 |---|---:|
 | Node.js | 24.18.0 LTS |
-| pnpm | 11.13.1 |
+| pnpm | 11.14.0 |
 | TypeScript | 7.0.2 |
 | Fastify / `@fastify/static` / `@fastify/cookie` | 5.10.0 / 10.1.0 / 11.1.2 |
 | PostgreSQL | 18.4 |
-| Kysely / `pg` | 0.29.3 / 8.22.0 |
+| Kysely / `pg` | 0.29.4 / 8.22.0 |
 | `ws` | 8.21.1 |
 | Zod | 4.4.3 |
 | React / React DOM | 19.2.7 |
@@ -108,11 +108,11 @@ docker compose down
 
 ## 本地开发
 
-要求 Node.js 24.18.0、pnpm 11.13.1 和 PostgreSQL 18.x。
+要求 Node.js 24.18.0、pnpm 11.14.0 和 PostgreSQL 18.x。
 
 ```powershell
 corepack enable
-corepack prepare pnpm@11.13.1 --activate
+corepack prepare pnpm@11.14.0 --activate
 pnpm install --frozen-lockfile
 Copy-Item .env.example .env
 ```

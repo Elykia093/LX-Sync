@@ -4,7 +4,7 @@
   "private": true,
   "description": "A self-hosted LX Music sync service with PostgreSQL persistence.",
   "license": "Apache-2.0",
-  "packageManager": "pnpm@11.13.1",
+  "packageManager": "pnpm@11.14.0",
   "engines": {
     "node": ">=24.18.0 <25"
   },

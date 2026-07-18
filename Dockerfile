@@ -3,7 +3,7 @@ FROM node:24.18.0-bookworm-slim AS toolchain
 
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
-RUN corepack enable && corepack prepare pnpm@11.13.1 --activate
+RUN corepack enable && corepack prepare pnpm@11.14.0 --activate
 
 FROM toolchain AS build
 WORKDIR /workspace

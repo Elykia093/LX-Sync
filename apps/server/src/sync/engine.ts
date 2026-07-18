@@ -11,6 +11,13 @@ import {
   type SyncDomain,
 } from '../protocol/index.js'
 import {
+  deviceLogReference,
+  type SyncLogger,
+  snapshotLogReference,
+  syncErrorLogContext,
+  syncLogContext,
+} from './logging.js'
+import {
   hasListContent,
   mergeDislikeFromSnapshot,
   mergeListsFromSnapshot,
@@ -24,7 +31,11 @@ import {
   parseListData,
 } from './snapshot.js'
 import type { ConnectionHub, SyncConnection } from './types.js'
-import { parseFeatures } from './validation.js'
+import {
+  parseDislikeAction,
+  parseFeatures,
+  parseListAction,
+} from './validation.js'
 
 export type SyncRepository = Pick<
   Repository,
@@ -35,6 +46,7 @@ export class SyncEngine {
   constructor(
     private readonly repository: SyncRepository,
     private readonly hub: ConnectionHub,
+    private readonly logger?: SyncLogger,
   ) {}
 
   async initialize(connection: SyncConnection): Promise<void> {
@@ -45,6 +57,11 @@ export class SyncEngine {
   }
 
   private async initializeExclusive(connection: SyncConnection): Promise<void> {
+    const startedAt = Date.now()
+    this.logger?.info(
+      { ...syncLogContext(connection), event: 'sync.initialize.started' },
+      'LX synchronization initialization started',
+    )
     const feature = parseFeatures(
       await connection.remote.getEnabledFeatures(
         'server',
@@ -55,16 +72,38 @@ export class SyncEngine {
     if (feature.list) await this.syncList(connection)
     if (feature.dislike) await this.syncDislike(connection)
     await connection.remote.finished()
+    this.logger?.info(
+      {
+        ...syncLogContext(connection),
+        event: 'sync.initialize.completed',
+        domains: (['list', 'dislike'] as const).filter(
+          (domain) =>
+            feature[domain] !== undefined && feature[domain] !== false,
+        ),
+        durationMs: Date.now() - startedAt,
+      },
+      'LX synchronization initialized',
+    )
   }
 
   async featureChanged(
     connection: SyncConnection,
     rawFeature: unknown,
   ): Promise<void> {
-    return this.hub.runExclusive(connection.user.id, async () => {
-      this.requireActive(connection)
-      await this.featureChangedExclusive(connection, rawFeature)
-    })
+    try {
+      return await this.hub.runExclusive(connection.user.id, async () => {
+        this.requireActive(connection)
+        await this.featureChangedExclusive(connection, rawFeature)
+      })
+    } catch (error) {
+      this.logOperationFailure(
+        connection,
+        'sync.features.failed',
+        'LX synchronization feature change failed',
+        error,
+      )
+      throw error
+    }
   }
 
   private async featureChangedExclusive(
@@ -81,9 +120,20 @@ export class SyncEngine {
         else await this.syncDislike(connection)
       }
     }
+    this.logger?.debug(
+      {
+        ...syncLogContext(connection),
+        event: 'sync.features.changed',
+        domains: (['list', 'dislike'] as const).filter(
+          (domain) => feature[domain] !== undefined,
+        ),
+      },
+      'LX synchronization features changed',
+    )
   }
 
   private async syncList(connection: SyncConnection): Promise<void> {
+    const startedAt = Date.now()
     const remoteHash = await connection.remoteList.list_sync_get_md5()
     let remote: ListData | undefined
     let initialMode: ReturnType<typeof transformClientMode> | undefined
@@ -98,6 +148,7 @@ export class SyncEngine {
           head.id,
         )
         connection.moduleReady.list = true
+        this.logDomainSynchronized(connection, 'list', 'unchanged', startedAt)
         return
       }
 
@@ -155,15 +206,20 @@ export class SyncEngine {
           saved.id,
         )
         connection.moduleReady.list = true
+        this.logDomainSynchronized(connection, 'list', 'updated', startedAt)
         return
       } catch (error) {
-        if (!(error instanceof SnapshotConflictError) || attempt === 2)
-          throw error
+        if (error instanceof SnapshotConflictError && attempt < 2) {
+          this.logConflictRetry(connection, 'list', attempt)
+          continue
+        }
+        throw error
       }
     }
   }
 
   private async syncDislike(connection: SyncConnection): Promise<void> {
+    const startedAt = Date.now()
     const remoteHash = await connection.remoteDislike.dislike_sync_get_md5()
     let remote: string | undefined
     let initialMode: ReturnType<typeof transformClientMode> | undefined
@@ -178,6 +234,12 @@ export class SyncEngine {
           head.id,
         )
         connection.moduleReady.dislike = true
+        this.logDomainSynchronized(
+          connection,
+          'dislike',
+          'unchanged',
+          startedAt,
+        )
         return
       }
       if (remote === undefined) {
@@ -228,22 +290,38 @@ export class SyncEngine {
           saved.id,
         )
         connection.moduleReady.dislike = true
+        this.logDomainSynchronized(connection, 'dislike', 'updated', startedAt)
         return
       } catch (error) {
-        if (!(error instanceof SnapshotConflictError) || attempt === 2)
-          throw error
+        if (error instanceof SnapshotConflictError && attempt < 2) {
+          this.logConflictRetry(connection, 'dislike', attempt)
+          continue
+        }
+        throw error
       }
     }
   }
 
   async applyList(
     connection: SyncConnection,
-    action: ListAction,
+    rawAction: unknown,
   ): Promise<void> {
-    return this.hub.runExclusive(connection.user.id, async () => {
-      this.requireActive(connection)
-      await this.applyListExclusive(connection, action)
-    })
+    try {
+      const action = parseListAction(rawAction)
+      return await this.hub.runExclusive(connection.user.id, async () => {
+        this.requireActive(connection)
+        await this.applyListExclusive(connection, action)
+      })
+    } catch (error) {
+      this.logOperationFailure(
+        connection,
+        'sync.action.failed',
+        'LX list synchronization action failed',
+        error,
+        'list',
+      )
+      throw error
+    }
   }
 
   private async applyListExclusive(
@@ -263,22 +341,38 @@ export class SyncEngine {
           expectedSnapshotId: head.id,
         })
         await this.broadcastList(connection, action, saved)
+        this.logActionApplied(connection, 'list', action.action, saved.id)
         return
       } catch (error) {
-        if (!(error instanceof SnapshotConflictError) || attempt === 2)
-          throw error
+        if (error instanceof SnapshotConflictError && attempt < 2) {
+          this.logConflictRetry(connection, 'list', attempt)
+          continue
+        }
+        throw error
       }
     }
   }
 
   async applyDislike(
     connection: SyncConnection,
-    action: DislikeAction,
+    rawAction: unknown,
   ): Promise<void> {
-    return this.hub.runExclusive(connection.user.id, async () => {
-      this.requireActive(connection)
-      await this.applyDislikeExclusive(connection, action)
-    })
+    try {
+      const action = parseDislikeAction(rawAction)
+      return await this.hub.runExclusive(connection.user.id, async () => {
+        this.requireActive(connection)
+        await this.applyDislikeExclusive(connection, action)
+      })
+    } catch (error) {
+      this.logOperationFailure(
+        connection,
+        'sync.action.failed',
+        'LX dislike synchronization action failed',
+        error,
+        'dislike',
+      )
+      throw error
+    }
   }
 
   private async applyDislikeExclusive(
@@ -298,10 +392,14 @@ export class SyncEngine {
           expectedSnapshotId: head.id,
         })
         await this.broadcastDislike(connection, action, saved)
+        this.logActionApplied(connection, 'dislike', action.action, saved.id)
         return
       } catch (error) {
-        if (!(error instanceof SnapshotConflictError) || attempt === 2)
-          throw error
+        if (error instanceof SnapshotConflictError && attempt < 2) {
+          this.logConflictRetry(connection, 'dislike', attempt)
+          continue
+        }
+        throw error
       }
     }
   }
@@ -347,7 +445,17 @@ export class SyncEngine {
             domain,
             snapshot.id,
           )
-        } catch {
+        } catch (error) {
+          this.logger?.warn(
+            {
+              ...syncLogContext(source),
+              event: 'sync.broadcast.failed',
+              domain,
+              targetDeviceRef: deviceLogReference(client.device.clientId),
+              ...syncErrorLogContext(error),
+            },
+            'LX synchronization broadcast failed',
+          )
           client.close()
         }
       })
@@ -356,5 +464,76 @@ export class SyncEngine {
 
   private requireActive(connection: SyncConnection): void {
     if (!connection.active) throw new Error('Connection is inactive')
+  }
+
+  private logDomainSynchronized(
+    connection: SyncConnection,
+    domain: SyncDomain,
+    result: 'unchanged' | 'updated',
+    startedAt: number,
+  ): void {
+    this.logger?.info(
+      {
+        ...syncLogContext(connection),
+        event: 'sync.domain.completed',
+        domain,
+        result,
+        durationMs: Date.now() - startedAt,
+      },
+      'LX synchronization domain completed',
+    )
+  }
+
+  private logConflictRetry(
+    connection: SyncConnection,
+    domain: SyncDomain,
+    attempt: number,
+  ): void {
+    this.logger?.debug(
+      {
+        ...syncLogContext(connection),
+        event: 'sync.cas.retry',
+        domain,
+        attempt: attempt + 1,
+        maxAttempts: 3,
+      },
+      'LX snapshot conflict; retrying synchronization',
+    )
+  }
+
+  private logActionApplied(
+    connection: SyncConnection,
+    domain: SyncDomain,
+    action: string,
+    snapshotId: string,
+  ): void {
+    this.logger?.debug(
+      {
+        ...syncLogContext(connection),
+        event: 'sync.action.persisted',
+        domain,
+        action,
+        snapshotRef: snapshotLogReference(snapshotId),
+      },
+      'LX synchronization action applied',
+    )
+  }
+
+  private logOperationFailure(
+    connection: SyncConnection,
+    event: 'sync.features.failed' | 'sync.action.failed',
+    message: string,
+    error: unknown,
+    domain?: SyncDomain,
+  ): void {
+    this.logger?.warn(
+      {
+        ...syncLogContext(connection),
+        event,
+        ...(domain ? { domain } : {}),
+        ...syncErrorLogContext(error),
+      },
+      message,
+    )
   }
 }

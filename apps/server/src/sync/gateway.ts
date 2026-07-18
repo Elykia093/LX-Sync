@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import type { Server as HttpServer, IncomingMessage } from 'node:http'
 import type { Socket } from 'node:net'
 import type { FastifyBaseLogger } from 'fastify'
@@ -8,6 +9,13 @@ import { LX_SYNC } from '../protocol/index.js'
 import { decodeWireMessage, encodeWireMessage } from '../security/crypto.js'
 import type { LxAuthService } from './auth.js'
 import { SyncEngine } from './engine.js'
+import {
+  deviceLogReference,
+  syncErrorLogContext,
+  syncLogContext,
+  userLogReference,
+} from './logging.js'
+import { resolveSyncPath } from './path.js'
 import type {
   ClientDislikeRemote,
   ClientListRemote,
@@ -15,11 +23,7 @@ import type {
   ConnectionHub,
   SyncConnection,
 } from './types.js'
-import {
-  parseDislikeAction,
-  parseListAction,
-  parseMessage2CallMessage,
-} from './validation.js'
+import { parseMessage2CallMessage } from './validation.js'
 
 const maxPayloadBytes = 8 * 1024 * 1024
 const maxBufferedBytes = 8 * 1024 * 1024
@@ -107,9 +111,10 @@ export function createLxGateway(input: {
   registry: ConnectionRegistry
   logger: FastifyBaseLogger
   trustProxy: boolean
+  syncBasePath?: string
 }): LxGateway {
   const registry = input.registry
-  const engine = new SyncEngine(input.repository, registry)
+  const engine = new SyncEngine(input.repository, registry, input.logger)
   const webSockets = new WebSocketServer({
     noServer: true,
     maxPayload: maxPayloadBytes,
@@ -117,12 +122,18 @@ export function createLxGateway(input: {
   const alive = new WeakMap<WebSocket, boolean>()
   const socketConnections = new WeakMap<WebSocket, SyncConnection>()
   const pendingDevices = new WeakMap<IncomingMessage, DeviceRecord>()
+  const pendingPathModes = new WeakMap<IncomingMessage, 'root' | 'scoped'>()
 
   webSockets.on('connection', (socket, request) => {
     const device = pendingDevices.get(request)
+    const pathMode = pendingPathModes.get(request) ?? 'root'
     pendingDevices.delete(request)
-    void startConnection(socket, device).catch((error: unknown) => {
-      input.logger.warn({ err: error }, 'LX WebSocket initialization failed')
+    pendingPathModes.delete(request)
+    void startConnection(socket, device, pathMode).catch((error: unknown) => {
+      input.logger.warn(
+        { event: 'sync.connection.failed', ...syncErrorLogContext(error) },
+        'LX WebSocket initialization failed',
+      )
       socket.close(LX_SYNC.closeCode.failed)
     })
   })
@@ -130,6 +141,7 @@ export function createLxGateway(input: {
   async function startConnection(
     socket: WebSocket,
     deviceValue: unknown,
+    pathMode: 'root' | 'scoped',
   ): Promise<void> {
     if (!isAuthenticatedDevice(deviceValue)) {
       socket.close(LX_SYNC.closeCode.failed)
@@ -141,6 +153,14 @@ export function createLxGateway(input: {
       socket.close(LX_SYNC.closeCode.failed)
       return
     }
+    const connectionId = randomUUID()
+    const logContext = {
+      connectionId,
+      pathMode,
+      userRef: userLogReference(user.id),
+      deviceRef: deviceLogReference(device.clientId),
+    }
+    const connectedAt = Date.now()
 
     await registry.closeDevice(device.userId, device.clientId)
     alive.set(socket, true)
@@ -154,9 +174,9 @@ export function createLxGateway(input: {
         onFeatureChanged: (feature: unknown) =>
           engine.featureChanged(connection, feature),
         onListSyncAction: (action: unknown) =>
-          engine.applyList(connection, parseListAction(action)),
+          engine.applyList(connection, action),
         onDislikeSyncAction: (action: unknown) =>
-          engine.applyDislike(connection, parseDislikeAction(action)),
+          engine.applyDislike(connection, action),
       },
       timeout: 120_000,
       sendMessage(message) {
@@ -170,21 +190,31 @@ export function createLxGateway(input: {
           })
           .catch((error: unknown) => {
             input.logger.warn(
-              { err: error, clientId: device.clientId },
+              {
+                ...logContext,
+                event: 'sync.message.send_failed',
+                ...syncErrorLogContext(error),
+              },
               'LX WebSocket send failed',
             )
             socket.close(LX_SYNC.closeCode.failed)
           })
       },
-      onError(error, path, groupName) {
+      onError(error) {
         input.logger.warn(
-          { err: error, path, groupName, clientId: device.clientId },
+          {
+            ...logContext,
+            event: 'sync.rpc.failed',
+            ...syncErrorLogContext(error),
+          },
           'LX RPC call failed',
         )
       },
     })
 
     connection = {
+      connectionId,
+      pathMode,
       active: true,
       device,
       user,
@@ -197,6 +227,14 @@ export function createLxGateway(input: {
     }
     socketConnections.set(socket, connection)
     registry.add(connection)
+    input.logger.info(
+      {
+        ...syncLogContext(connection),
+        event: 'sync.connection.opened',
+        isMobile: device.isMobile,
+      },
+      'LX device connected',
+    )
 
     let inbound = Promise.resolve()
     socket.on('message', (data, isBinary) => {
@@ -214,24 +252,41 @@ export function createLxGateway(input: {
         })
         .catch((error: unknown) => {
           input.logger.warn(
-            { err: error, clientId: device.clientId },
+            {
+              ...logContext,
+              event: 'sync.message.rejected',
+              ...syncErrorLogContext(error),
+            },
             'Invalid LX WebSocket message',
           )
           socket.close(LX_SYNC.closeCode.failed)
         })
     })
 
-    socket.once('close', () => {
+    socket.once('close', (code) => {
       disconnected = true
       msg2call.destroy()
       registry.remove(connection)
+      input.logger.info(
+        {
+          ...logContext,
+          event: 'sync.connection.closed',
+          code,
+          durationMs: Date.now() - connectedAt,
+        },
+        'LX device disconnected',
+      )
     })
 
     try {
       await engine.initialize(connection)
     } catch (error) {
       input.logger.warn(
-        { err: error, clientId: device.clientId },
+        {
+          ...logContext,
+          event: 'sync.initialize.failed',
+          ...syncErrorLogContext(error),
+        },
         'LX initial synchronization failed',
       )
       socket.close(LX_SYNC.closeCode.failed)
@@ -244,6 +299,12 @@ export function createLxGateway(input: {
         request.url ?? '/',
         `http://${request.headers.host ?? 'localhost'}`,
       )
+      const scope = resolveSyncPath(url.pathname, input.syncBasePath)
+      if (!scope) {
+        socket.write('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n')
+        socket.destroy()
+        return
+      }
       const device = await input.auth.authenticateUpgrade({
         ip: resolveUpgradeIp({
           forwarded: request.headers['x-forwarded-for'],
@@ -252,6 +313,7 @@ export function createLxGateway(input: {
         }),
         clientId: url.searchParams.get('i'),
         token: url.searchParams.get('t'),
+        ...(scope.kind === 'scoped' ? { userId: scope.userId } : {}),
       })
       if (!device) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n')
@@ -259,11 +321,15 @@ export function createLxGateway(input: {
         return
       }
       pendingDevices.set(request, device)
+      pendingPathModes.set(request, scope.kind)
       webSockets.handleUpgrade(request, socket, head, (webSocket) => {
         webSockets.emit('connection', webSocket, request)
       })
     })().catch((error: unknown) => {
-      input.logger.warn({ err: error }, 'LX WebSocket upgrade failed')
+      input.logger.warn(
+        { event: 'sync.upgrade.failed', ...syncErrorLogContext(error) },
+        'LX WebSocket upgrade failed',
+      )
       socket.destroy()
     })
   }

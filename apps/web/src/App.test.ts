@@ -1,7 +1,18 @@
 import { QueryClient } from '@tanstack/react-query'
 import { describe, expect, it } from 'vitest'
-import { applyLoggedOutState, queryKeys, sessionLoginError } from './App.js'
-import { ApiError, type Session, shouldExpireSession } from './api.js'
+import {
+  applyLoggedOutState,
+  queryKeys,
+  sessionLoginError,
+  syncAddress,
+} from './App.js'
+import {
+  ApiError,
+  parseServerStatus,
+  parseSyncUser,
+  type Session,
+  shouldExpireSession,
+} from './api.js'
 
 describe('applyLoggedOutState', () => {
   it('removes protected cache data and exposes an explicit logged-out state', () => {
@@ -41,5 +52,43 @@ describe('applyLoggedOutState', () => {
     expect(shouldExpireSession('/auth/session', unauthorized)).toBe(true)
     expect(shouldExpireSession('/auth/login', unauthorized)).toBe(false)
     expect(shouldExpireSession('/status', forbidden)).toBe(false)
+  })
+})
+
+describe('syncAddress', () => {
+  it('uses a scoped path when present and preserves the root fallback', () => {
+    expect(
+      syncAddress(
+        'https://sync.example.test',
+        '/base/00000000-0000-4000-8000-000000000001',
+      ),
+    ).toBe(
+      'https://sync.example.test/base/00000000-0000-4000-8000-000000000001',
+    )
+    expect(syncAddress('https://sync.example.test', null)).toBe(
+      'https://sync.example.test',
+    )
+  })
+
+  it('treats scoped path fields omitted by an older server as disabled', () => {
+    expect(
+      parseServerStatus({
+        serverId: 'server',
+        serverName: 'LX Sync',
+        startedAt: '2026-07-18T00:00:00.000Z',
+        onlineDevices: 0,
+      }).syncBasePath,
+    ).toBeNull()
+    expect(
+      parseSyncUser({
+        id: '00000000-0000-4000-8000-000000000001',
+        name: 'User',
+        enabled: true,
+        maxSnapshots: 10,
+        addMusicLocationType: 'bottom',
+        deviceCount: 0,
+        createdAt: '2026-07-18T00:00:00.000Z',
+      }).syncPath,
+    ).toBeNull()
   })
 })

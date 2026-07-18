@@ -99,10 +99,12 @@ docker compose down
 ## 连接 LX Music
 
 1. 在管理端创建同步用户并设置至少 8 个字符的连接访问码。
-2. 在 LX Music 的同步设置中填写服务地址，例如 `https://sync.example.com`。
+2. 在 LX Music 的同步设置中填写管理端用户详情显示的同步服务地址。默认是根地址，例如 `https://sync.example.com`；启用独立同步路径后形如 `https://sync.example.com/base/<用户 UUID>`。
 3. 输入该同步用户的连接访问码并完成设备登记。
 
 访问码不会被管理端再次显示。轮换访问码会断开该用户的在线设备，但已登记设备仍使用各自设备密钥；若要强制某台设备失效，请在“设备”中撤销它。
+
+可选的 `SYNC_BASE_PATH=/base` 会为每个用户增加独立同步入口，缩小首次登记时需要尝试的用户候选范围，并避免相同连接访问码造成歧义。用户 UUID 只是不可预测的路由标识，不是认证凭据；服务端仍会完整校验连接访问码或设备密钥及设备归属。根路径始终保留，用于旧客户端和回滚。该变量只影响 LX 同步入口，不是管理站的整站 `BASE_PATH`；管理 API、SPA 和静态资源继续使用根路径。
 
 协议必须经过支持 WebSocket upgrade 的反向代理。管理端与 API 应保持同源；不要将 `/api/v1` 暴露为允许任意跨域凭证请求的接口。
 
@@ -138,9 +140,20 @@ Vite 在 `http://localhost:5173` 提供管理端并代理 `/api`。生产构建�
 |---|---|
 | `pnpm typecheck` | 对 server 和 web 执行真实 TypeScript 类型检查 |
 | `pnpm test` | 运行 Vitest 测试 |
+| `pnpm --filter @lx-sync/server test:integration` | 使用 `TEST_DATABASE_URL` 运行真实 PostgreSQL 协议集成测试 |
 | `pnpm lint` | 运行 Biome 检查 |
 | `pnpm build` | 构建服务端 JS 和前端静态资源 |
 | `pnpm check` | 依次执行 lint、typecheck、test、build |
+
+真实 PostgreSQL 测试会创建并删除随机 `lx_sync_test_*` schema。为防止误指向生产库，数据库名必须明确包含 `test`，并同时设置 `ALLOW_TEST_DATABASE_WRITE=1`：
+
+```powershell
+$env:TEST_DATABASE_URL='postgresql://postgres:postgres@127.0.0.1:5432/lx_sync_test'
+$env:ALLOW_TEST_DATABASE_WRITE='1'
+pnpm --filter @lx-sync/server test:integration
+```
+
+协议 E2E 的测试客户端固定于上述 LX v4 参考提交，自行实现握手常量、AES/MD5 和 `cg_` gzip codec，不导入服务端的协议或安全运行时代码；套件同时覆盖小型 message2call raw frame 与双向压缩帧，避免客户端和服务端同源漂移后仍一起通过。
 
 ## 环境变量
 
@@ -154,6 +167,7 @@ Vite 在 `http://localhost:5173` 提供管理端并代理 `/api`。生产构建�
 | `HOST` / `PORT` | 否 | `127.0.0.1` / `9527` | 监听地址和端口；容器内使用 `0.0.0.0` |
 | `NODE_ENV` | 否 | `development` | `development`、`test` 或 `production` |
 | `PUBLIC_ORIGIN` | 生产建议必填 | 当前请求来源 | 允许管理端写请求的精确 Origin，不带末尾 `/` |
+| `SYNC_BASE_PATH` | 否 | 关闭 | 独立用户同步路径前缀，例如 `/base`；必须是无末尾 `/` 的绝对路径 |
 | `SESSION_TTL_HOURS` | 否 | `24` | 管理会话绝对有效期，1–720 小时 |
 | `MAX_SNAPSHOTS` | 否 | `10` | 新同步用户的默认快照保留数，1–1000 |
 | `TRUST_PROXY` | 否 | `false` | 仅在服务紧邻一跳可信反向代理时启用 |
@@ -183,10 +197,10 @@ Vite 在 `http://localhost:5173` 提供管理端并代理 `/api`。生产构建�
 
 ```nginx
 http {
-    # $uri excludes the query string. Do not log $request, $request_uri or
-    # $args because LX WebSocket authentication uses sensitive query values.
+    # Do not log any URI or query value: scoped paths contain the user route
+    # identifier, and LX WebSocket authentication uses sensitive query values.
     log_format lx_sync '$remote_addr - $remote_user [$time_local] '
-                       '"$request_method $uri $server_protocol" $status $body_bytes_sent';
+                       '"$request_method $server_protocol" $status $body_bytes_sent';
     access_log /var/log/nginx/access.log lx_sync;
 
     server {
@@ -209,6 +223,8 @@ http {
 }
 ```
 
+该 `log_format` 只约束 Nginx access log。Nginx error log、WAF/CDN 和托管负载均衡器也可能记录完整请求行，生产环境必须分别关闭 URI/query 采集或限制级别、访问权限与保留期后再验证。
+
 对应环境设置：
 
 ```dotenv
@@ -225,7 +241,8 @@ TRUST_PROXY=true
 - 所有管理写请求校验精确 `Origin`，输入由 Zod 白名单解析，未知字段被拒绝。
 - LX 连接访问码仅用于派生兼容协议密钥；派生密钥和设备密钥使用 AES-256-GCM 静态加密。
 - 登录和 LX 握手有单实例内存限流；它不能替代反向代理/WAF 的账号、IP 和全局限流。
-- 日志配置会遮盖 Cookie、Authorization 和 Set-Cookie；审计 metadata 不写入访问码或密钥。
+- 应用访问日志会遮盖请求 URL、Cookie、Authorization 和 Set-Cookie；反向代理也必须避免记录 URI/query。审计 metadata 不写入访问码或密钥。
+- 同步生命周期日志使用稳定的 `event`、随机 `connectionId`、`pathMode`，以及用户、设备和快照 ID 的 12 位 SHA-256 引用；域、结果、重试次数和耗时按事件记录。日志不记录原始标识、访问码、设备密钥、协议 payload、歌名、异常详情或 WebSocket query。
 - LX v4 兼容协议包含历史加密设计（AES-128-ECB、MD5 派生）。它们仅用于与现有客户端互操作，不能视为现代密码协议；外层 TLS 是必要防护。
 - 当前没有管理员 MFA、RBAC、跨实例 session cache 或密钥在线轮换。将管理端暴露到公网前，应至少限制来源、启用 TLS、使用长随机密码并监控失败登录。
 
@@ -258,7 +275,24 @@ docker compose start app
 3. 生产启动时自动运行向前迁移；不要让多个不同版本长期并行。
 4. 若仅代码异常且迁移仍向后兼容，可回滚上一镜像；涉及数据语义变化时优先 roll-forward，不能假设 `docker compose down` 会回滚数据库。
 
-本仓库目前未配置 CI、SBOM、镜像签名或 provenance，因此本地 `docker build` 只能证明可构建，不能等价为完整生产发布证据。
+`SYNC_BASE_PATH` 不涉及数据库迁移。若独立路径异常，先把使用 scoped 地址的客户端改回服务 Origin 根地址，再将该变量设为空并重启；直接清空变量会使仍保存 scoped 地址的客户端失联。无法同步修改客户端时，应在回滚窗口暂时保留 scoped 路由。旧根路径和已有设备密钥在启用期间始终保持兼容。
+
+结构化日志字段也是纯代码增量，不改数据库或 wire format；回滚上一镜像即可撤销，日志消费者应容忍新事件字段缺失。
+
+### CI 与镜像发布
+
+`.github/workflows/ci.yml` 在 PR、`main` push 和手动触发时运行冻结依赖安装、lint、类型检查、单元测试、真实 PostgreSQL 协议集成测试和构建。`CI / Check and protocol integration` 适合作为所有 PR 的 required check。
+
+镜像工作流遵循以下规则：
+
+- 影响镜像的 PR 会预构建 `linux/amd64`、`linux/arm64`，但不登录仓库或推送制品。
+- 手动触发只执行源码、PostgreSQL 和构建验证，不发布镜像；只有 `main` 或合规版本 tag 的 push 会进入发布 job。
+- 推送 `main` 会发布 `edge` 和 `sha-<完整提交 SHA>` 标签；`edge` 仅用于跟踪主干，不应作为生产部署标识。
+- 推送 `v*.*.*` tag 时，tag 必须精确等于 `v${package.json.version}`，根 package 与 server package 版本必须一致，且目标 commit 必须可从 `origin/main` 到达；通过后发布完整语义版本、`major.minor` 和 SHA 标签。
+- PostgreSQL 18.4 service 以 OCI digest 固定。工作流显式禁用 `latest`，先只推送 `candidate-<提交 SHA>`，用 `imagetools inspect` 确认 manifest 同时包含 amd64 与 arm64，并为该 digest 发布 SBOM 和 GitHub provenance attestation；全部成功后才提升 edge/semver/SHA 正式标签并逐一确认仍指向同一 digest。
+- 发布摘要会记录不可变 digest。生产部署与回滚必须使用 `ghcr.io/elykia093/lx-sync@sha256:<digest>`，不能只依赖可变标签。仓库内 `compose.yaml` 的 `lx-sync:0.1.0` 是本地源码构建标签，不代表已发布的 GHCR 制品。
+
+GitHub ruleset、tag 保护、required checks、GHCR 可见性和保留策略属于仓库外配置，工作流无法自行证明它们已启用。首次发布前应至少将上述 CI check 设为合并门禁，限制 release tag 的创建权限，并确认 GHCR 不会清理仍用于回滚的 digest。回滚应用时切换到上一条已验证 digest；数据库迁移仍按前述兼容性判断决定回滚或 roll-forward。
 
 ## 协议来源与许可证
 

@@ -64,6 +64,7 @@ async function main(): Promise<void> {
       registry,
       logger: app.log,
       trustProxy: config.TRUST_PROXY,
+      ...(config.SYNC_BASE_PATH ? { syncBasePath: config.SYNC_BASE_PATH } : {}),
     })
 
     sessionCleanup = setInterval(() => {

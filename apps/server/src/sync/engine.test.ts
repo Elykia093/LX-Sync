@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { SnapshotConflictError, type SnapshotRecord } from '../db/repository.js'
 import type { DislikeRules, ListData, SyncDomain } from '../protocol/index.js'
 import { SyncEngine, type SyncRepository } from './engine.js'
+import type { SyncLogger } from './logging.js'
 import type { ConnectionHub, SyncConnection } from './types.js'
 
 const emptyList = (): ListData => ({
@@ -30,6 +31,7 @@ class ListRepository implements SyncRepository {
   constructor(
     private readonly conflictFirst: boolean,
     private readonly events: string[],
+    private readonly saveError?: Error,
   ) {}
 
   async getHead(
@@ -87,6 +89,7 @@ class ListRepository implements SyncRepository {
   }): Promise<SnapshotRecord> {
     if (input.domain === 'dislike' || typeof input.data === 'string')
       throw new Error('Unexpected dislike write')
+    if (this.saveError) throw this.saveError
     this.saveAttempts += 1
     if (this.conflictFirst && this.saveAttempts === 1)
       throw new SnapshotConflictError()
@@ -108,6 +111,8 @@ function listConnection(input: {
   setListData?: () => Promise<void>
 }): SyncConnection {
   return {
+    connectionId: 'connection-1',
+    pathMode: 'root',
     active: true,
     device: {
       clientId: 'client',
@@ -172,9 +177,16 @@ const directHub: ConnectionHub = {
 describe('SyncEngine initial synchronization', () => {
   it('recomputes after a CAS conflict and advances the baseline last', async () => {
     const events: string[] = []
+    const logs: Array<{ bindings: Record<string, unknown>; message: string }> =
+      []
+    const logger: SyncLogger = {
+      debug: (bindings, message) => logs.push({ bindings, message }),
+      info: (bindings, message) => logs.push({ bindings, message }),
+      warn: (bindings, message) => logs.push({ bindings, message }),
+    }
     const repository = new ListRepository(true, events)
     const connection = listConnection({ events })
-    const engine = new SyncEngine(repository, directHub)
+    const engine = new SyncEngine(repository, directHub, logger)
 
     await engine.initialize(connection)
 
@@ -188,6 +200,31 @@ describe('SyncEngine initial synchronization', () => {
       'connection-finished',
     ])
     expect(connection.moduleReady.list).toBe(true)
+    expect(logs).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          bindings: expect.objectContaining({
+            event: 'sync.cas.retry',
+            connectionId: 'connection-1',
+            userRef: expect.stringMatching(/^[a-f0-9]{12}$/),
+            deviceRef: expect.stringMatching(/^[a-f0-9]{12}$/),
+            domain: 'list',
+            attempt: 1,
+          }),
+          message: 'LX snapshot conflict; retrying synchronization',
+        }),
+      ]),
+    )
+    expect(logs.map((entry) => entry.bindings.event)).toEqual(
+      expect.arrayContaining([
+        'sync.initialize.started',
+        'sync.cas.retry',
+        'sync.domain.completed',
+        'sync.initialize.completed',
+      ]),
+    )
+    expect(JSON.stringify(logs)).not.toContain('"userId":"user"')
+    expect(JSON.stringify(logs)).not.toContain('"deviceRef":"client"')
   })
 
   it('does not advance the device baseline when client delivery fails', async () => {
@@ -206,5 +243,107 @@ describe('SyncEngine initial synchronization', () => {
     )
     expect(repository.markedSnapshots).toEqual([])
     expect(connection.moduleReady.list).toBe(false)
+  })
+
+  it('logs terminal action failures without error details', async () => {
+    const logs: Array<{ bindings: Record<string, unknown>; message: string }> =
+      []
+    const logger: SyncLogger = {
+      debug: (bindings, message) => logs.push({ bindings, message }),
+      info: (bindings, message) => logs.push({ bindings, message }),
+      warn: (bindings, message) => logs.push({ bindings, message }),
+    }
+    const repository = new ListRepository(
+      false,
+      [],
+      new Error('sensitive database query'),
+    )
+    const connection = listConnection({ events: [] })
+    connection.moduleReady.list = true
+    const engine = new SyncEngine(repository, directHub, logger)
+
+    await expect(
+      engine.applyList(connection, {
+        action: 'list_music_add',
+        data: {
+          id: 'default',
+          musicInfos: [{ id: 'track' }],
+          addMusicLocationType: 'bottom',
+        },
+      }),
+    ).rejects.toThrow('sensitive database query')
+
+    expect(logs).toContainEqual({
+      bindings: expect.objectContaining({
+        event: 'sync.action.failed',
+        domain: 'list',
+        errorType: 'Error',
+      }),
+      message: 'LX list synchronization action failed',
+    })
+    expect(JSON.stringify(logs)).not.toContain('sensitive database query')
+  })
+
+  it('logs action validation failures before touching the repository', async () => {
+    const logs: Array<{ bindings: Record<string, unknown>; message: string }> =
+      []
+    const logger: SyncLogger = {
+      debug: (bindings, message) => logs.push({ bindings, message }),
+      info: (bindings, message) => logs.push({ bindings, message }),
+      warn: (bindings, message) => logs.push({ bindings, message }),
+    }
+    const repository = new ListRepository(false, [])
+    const connection = listConnection({ events: [] })
+    connection.moduleReady.list = true
+    const engine = new SyncEngine(repository, directHub, logger)
+
+    await expect(
+      engine.applyList(connection, {
+        action: 'invalid_action',
+        data: { secret: 'client-controlled-payload' },
+      }),
+    ).rejects.toThrow()
+
+    expect(repository.getHeadCalls).toBe(0)
+    expect(logs).toContainEqual({
+      bindings: expect.objectContaining({
+        event: 'sync.action.failed',
+        domain: 'list',
+        errorType: 'Error',
+      }),
+      message: 'LX list synchronization action failed',
+    })
+    expect(JSON.stringify(logs)).not.toContain('client-controlled-payload')
+  })
+
+  it('logs feature validation failures without client-controlled details', async () => {
+    const logs: Array<{ bindings: Record<string, unknown>; message: string }> =
+      []
+    const logger: SyncLogger = {
+      debug: (bindings, message) => logs.push({ bindings, message }),
+      info: (bindings, message) => logs.push({ bindings, message }),
+      warn: (bindings, message) => logs.push({ bindings, message }),
+    }
+    const repository = new ListRepository(false, [])
+    const connection = listConnection({ events: [] })
+    const engine = new SyncEngine(repository, directHub, logger)
+
+    await expect(
+      engine.featureChanged(connection, {
+        list: { skipSnapshot: 'client-controlled-payload' },
+      }),
+    ).rejects.toThrow()
+
+    expect(repository.getHeadCalls).toBe(0)
+    expect(logs).toContainEqual({
+      bindings: expect.objectContaining({
+        event: 'sync.features.failed',
+        errorType: 'Error',
+        userRef: expect.stringMatching(/^[a-f0-9]{12}$/),
+        deviceRef: expect.stringMatching(/^[a-f0-9]{12}$/),
+      }),
+      message: 'LX synchronization feature change failed',
+    })
+    expect(JSON.stringify(logs)).not.toContain('client-controlled-payload')
   })
 })

@@ -721,6 +721,56 @@ button.secondary {
   gap: 16px;
 }
 
+.mono,
+code {
+  font-family: "SFMono-Regular", Consolas, monospace;
+}
+
+.sync-address {
+  display: grid;
+  gap: 7px;
+  margin-bottom: 18px;
+}
+
+.sync-address > span {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.sync-address-value {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 40px;
+  gap: 8px;
+}
+
+.sync-address-value code {
+  min-width: 0;
+  padding: 11px 12px;
+  overflow-wrap: anywhere;
+  color: var(--text-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--surface-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.icon-button {
+  display: inline-grid;
+  width: 40px;
+  height: 40px;
+  place-items: center;
+  padding: 0;
+  color: var(--brand-primary);
+  border: 1px solid var(--border-default);
+  border-radius: 8px;
+  background: var(--surface-panel);
+}
+
+.icon-button:hover {
+  background: var(--primary-soft);
+}
+
 .form-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -953,11 +1003,6 @@ td.actions {
 .block {
   display: block;
   margin-top: 4px;
-}
-
-.mono,
-code {
-  font-family: "SFMono-Regular", Consolas, monospace;
 }
 
 .sr-only {

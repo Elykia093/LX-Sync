@@ -10,6 +10,7 @@ const statusSchema = z.object({
   serverName: z.string(),
   startedAt: timestampSchema,
   onlineDevices: z.number(),
+  syncBasePath: z.string().nullable().default(null),
 })
 const userSchema = z.object({
   id: z.string().uuid(),
@@ -19,6 +20,7 @@ const userSchema = z.object({
   addMusicLocationType: z.enum(['top', 'bottom']),
   deviceCount: z.number(),
   createdAt: timestampSchema,
+  syncPath: z.string().nullable().default(null),
 })
 const deviceSchema = z.object({
   clientId: z.string(),
@@ -58,6 +60,11 @@ export type SyncUser = z.infer<typeof userSchema>
 export type Device = z.infer<typeof deviceSchema>
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type AuditEvent = z.infer<typeof auditEventSchema>
+
+export const parseServerStatus = (value: unknown): ServerStatus =>
+  statusSchema.parse(value)
+export const parseSyncUser = (value: unknown): SyncUser =>
+  userSchema.parse(value)
 
 export class ApiError extends Error {
   constructor(

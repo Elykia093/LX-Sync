@@ -36,8 +36,8 @@ Cookie 属性：
 | POST | `/api/v1/auth/login` | `{ username, password }` | `200 { username, expiresAt }` + Cookie | 400, 401, 403, 429 |
 | POST | `/api/v1/auth/logout` | 无 | `204` + 清除 Cookie | 401, 403 |
 | GET | `/api/v1/auth/session` | 无 | `200 { username, expiresAt }` | 401 |
-| GET | `/api/v1/status` | 无 | `200 { serverId, serverName, startedAt, onlineDevices }` | 401 |
-| GET | `/api/v1/users` | 无 | `200 { data: User[] }` | 401 |
+| GET | `/api/v1/status` | 无 | `200 { serverId, serverName, startedAt, onlineDevices, syncBasePath }` | 401 |
+| GET | `/api/v1/users` | 无 | `200 { data: User[] }`，每个用户含只读 `syncPath` | 401 |
 | POST | `/api/v1/users` | `{ name, connectionCode, maxSnapshots?, addMusicLocationType? }` | `201 User` + `Location` | 400, 401, 403, 409 |
 | PATCH | `/api/v1/users/:userId` | `enabled`、`maxSnapshots`、`addMusicLocationType` 中至少一项 | `200 User` | 400, 401, 403, 404 |
 | PUT | `/api/v1/users/:userId/connection-credential` | `{ connectionCode }` | `204` | 400, 401, 403, 404 |
@@ -51,6 +51,8 @@ Cookie 属性：
 
 访问码只在请求中短暂出现，服务端仅保存其派生密钥的 AES-256-GCM 密文；API、日志和审计记录均不回显访问码。
 
+`syncBasePath` 和 `User.syncPath` 在 `SYNC_BASE_PATH` 未启用时为 `null`。启用后，`syncBasePath` 返回配置的前缀，`User.syncPath` 返回可直接附加到公开 Origin 的用户同步路径。两个字段均为只读、向后兼容的新增响应字段；滚动部署或回滚期间，管理端会把旧服务缺失的字段解释为 `null`。
+
 ## 健康检查
 
 - `GET /health/live`：仅表示进程存活，不访问数据库。
@@ -58,6 +60,8 @@ Cookie 属性：
 
 ## LX 兼容接口
 
-`GET /hello`、`GET /id`、`GET /ah` 保留 LX Music v4 固定握手。WebSocket upgrade 使用 query `i`（设备 ID）和 `t`（设备密文）鉴权；这两个 query 只属于上游兼容协议，不能用于管理 API。
+`GET /hello`、`GET /id`、`GET /ah` 保留 LX Music v4 固定握手。WebSocket upgrade 使用根路径和 query `i`（设备 ID）、`t`（设备密文）鉴权；这两个 query 只属于上游兼容协议，不能用于管理 API。
+
+设置 `SYNC_BASE_PATH=/base` 后，同时提供 `/base/:userId/hello`、`/base/:userId/id`、`/base/:userId/ah` 和 `/base/:userId` WebSocket upgrade。`:userId` 必须是 UUID；scoped `/ah` 只加载现有且启用的目标用户，已登记设备还必须属于该用户。未知、停用或不匹配的用户仍按协议认证失败处理。路径只用于候选隔离，不能替代连接访问码、设备密钥或 TLS。管理 API、SPA 和静态资源仍部署在根路径；该配置不是整站 `BASE_PATH`。
 
 兼容端点刻意保留上游纯文本响应和 `message2call@0.1.3` wire format。2.x 改变了消息格式，不能直接升级。

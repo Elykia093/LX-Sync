@@ -15,6 +15,7 @@ const config = {
   MAX_SNAPSHOTS: 10,
   TRUST_PROXY: false,
   PUBLIC_ORIGIN: 'https://sync.example.test',
+  SYNC_BASE_PATH: '/base',
   LOG_LEVEL: 'silent',
 } satisfies AppConfig
 
@@ -40,6 +41,7 @@ describe('management authentication contract', () => {
     const auditActions: string[] = []
     const closeUserStarted = Promise.withResolvers<void>()
     const closeUserFinished = Promise.withResolvers<void>()
+    const protocolAuthUsers: Array<string | null> = []
 
     const repository: AppDependencies['repository'] = {
       checkDatabase: async () => {},
@@ -61,7 +63,17 @@ describe('management authentication contract', () => {
         storedSessions.delete(sessionHash)
         if (audit) auditActions.push(audit.action)
       },
-      listUsers: async () => [],
+      listUsers: async () => [
+        {
+          id: disabledUserId,
+          name: 'disabled user',
+          enabled: false,
+          maxSnapshots: 10,
+          addMusicLocationType: 'bottom' as const,
+          deviceCount: 1,
+          createdAt: new Date('2026-01-01T00:00:00.000Z'),
+        },
+      ],
       createUser: async (_input, audit) => {
         if (audit) auditActions.push(audit.action)
         return {
@@ -96,10 +108,13 @@ describe('management authentication contract', () => {
       config,
       repository,
       auth: {
-        authenticateHttp: async () => ({
-          statusCode: 401,
-          body: 'Auth failed',
-        }),
+        authenticateHttp: async (input) => {
+          protocolAuthUsers.push(input.userId ?? null)
+          return {
+            statusCode: 401,
+            body: 'Auth failed',
+          }
+        },
       },
       registry: {
         count: () => 0,
@@ -114,6 +129,37 @@ describe('management authentication contract', () => {
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
     })
     apps.push(app)
+
+    const rootHello = await app.inject({ method: 'GET', url: '/hello' })
+    const scopedHello = await app.inject({
+      method: 'GET',
+      url: `/base/${disabledUserId}/hello`,
+    })
+    expect(scopedHello.body).toBe(rootHello.body)
+
+    const rootId = await app.inject({ method: 'GET', url: '/id' })
+    const scopedId = await app.inject({
+      method: 'GET',
+      url: `/base/${disabledUserId}/id`,
+    })
+    expect(scopedId.body).toBe(rootId.body)
+
+    const invalidScopedPath = await app.inject({
+      method: 'GET',
+      url: '/base/not-a-user/hello',
+    })
+    expect(invalidScopedPath.statusCode).toBe(400)
+
+    const uppercaseScopedUserId = 'AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA'
+    await app.inject({
+      method: 'GET',
+      url: `/base/${uppercaseScopedUserId}/ah`,
+    })
+    await app.inject({ method: 'GET', url: '/ah' })
+    expect(protocolAuthUsers).toEqual([
+      uppercaseScopedUserId.toLowerCase(),
+      null,
+    ])
 
     const rejectedOrigin = await app.inject({
       method: 'POST',
@@ -148,6 +194,22 @@ describe('management authentication contract', () => {
     expect(session.statusCode).toBe(200)
     expect(session.json()).toMatchObject({ username: 'admin' })
 
+    const status = await app.inject({
+      method: 'GET',
+      url: '/api/v1/status',
+      headers: { cookie },
+    })
+    expect(status.json()).toMatchObject({ syncBasePath: '/base' })
+
+    const users = await app.inject({
+      method: 'GET',
+      url: '/api/v1/users',
+      headers: { cookie },
+    })
+    expect(users.json().data[0]).toMatchObject({
+      syncPath: `/base/${disabledUserId}`,
+    })
+
     const disableRequest = app.inject({
       method: 'PATCH',
       url: `/api/v1/users/${disabledUserId}`,
@@ -159,6 +221,9 @@ describe('management authentication contract', () => {
     closeUserFinished.resolve()
     const disabled = await disableRequest
     expect(disabled.statusCode).toBe(200)
+    expect(disabled.json()).toMatchObject({
+      syncPath: `/base/${disabledUserId}`,
+    })
     expect(auditActions).toContain('user.update')
 
     const logoutWithoutOrigin = await app.inject({

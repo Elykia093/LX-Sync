@@ -6,8 +6,10 @@ import {
 } from '@tanstack/react-query'
 import {
   Activity,
+  Check,
   ChevronDown,
   Clock3,
+  Copy,
   Home,
   LayoutDashboard,
   LogOut,
@@ -571,6 +573,7 @@ function UserDetailContent({ user }: { user: SyncUser }) {
         <section className="panel">
           <p className="eyebrow">SETTINGS</p>
           <h2>同步设置</h2>
+          <SyncAddress syncPath={user.syncPath} />
           <form className="stack" onSubmit={saveSettings}>
             <label className="checkbox">
               <input
@@ -697,6 +700,44 @@ function UserDetailContent({ user }: { user: SyncUser }) {
         />
       </div>
     </>
+  )
+}
+
+function SyncAddress({ syncPath }: { syncPath: string | null }) {
+  const [copied, setCopied] = useState(false)
+  const address = syncAddress(window.location.origin, syncPath)
+
+  const copyAddress = async () => {
+    if (!navigator.clipboard) return
+    try {
+      await navigator.clipboard.writeText(address)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <div className="sync-address">
+      <span>同步服务地址</span>
+      <div className="sync-address-value">
+        <code>{address}</code>
+        <button
+          type="button"
+          className="icon-button"
+          title="复制同步服务地址"
+          aria-label="复制同步服务地址"
+          onClick={() => void copyAddress()}
+        >
+          {copied ? (
+            <Check aria-hidden="true" size={17} />
+          ) : (
+            <Copy aria-hidden="true" size={17} />
+          )}
+        </button>
+      </div>
+      <small>{syncPath ? '独立同步路径已启用' : '使用兼容根路径'}</small>
+    </div>
   )
 }
 
@@ -977,4 +1018,8 @@ export function applyLoggedOutState(queryClient: QueryClient): void {
     predicate: (query) => query.queryKey[0] !== queryKeys.session[0],
   })
   queryClient.setQueryData<Session | null>(queryKeys.session, null)
+}
+
+export function syncAddress(origin: string, syncPath: string | null): string {
+  return `${origin}${syncPath ?? ''}`
 }

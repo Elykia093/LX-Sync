@@ -4,12 +4,30 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
-import type { FormEvent, InputHTMLAttributes, ReactNode } from 'react'
+import {
+  Activity,
+  Clock3,
+  LayoutDashboard,
+  LogOut,
+  type LucideIcon,
+  Plus,
+  Radio,
+  ScrollText,
+  UsersRound,
+} from 'lucide-react'
+import {
+  type FormEvent,
+  type InputHTMLAttributes,
+  type ReactNode,
+  useEffect,
+} from 'react'
 import {
   Link,
   Navigate,
+  NavLink,
   Route,
   Routes,
+  useLocation,
   useNavigate,
   useParams,
 } from 'react-router-dom'
@@ -91,6 +109,13 @@ function LoginPage({ serviceError }: { serviceError: ApiError | null }) {
   return (
     <main className="login-page">
       <section className="login-card" aria-labelledby="login-title">
+        <div className="login-brand">
+          <span className="brand-mark large">LX</span>
+          <span>
+            <strong>LX Sync</strong>
+            <small>自托管同步服务</small>
+          </span>
+        </div>
         <p className="eyebrow">SELF-HOSTED SYNC</p>
         <h1 id="login-title">LX Sync</h1>
         <p className="muted">登录后管理同步用户、设备与快照。</p>
@@ -131,39 +156,105 @@ function AppShell({
   children: ReactNode
 }) {
   const queryClient = useQueryClient()
+  const location = useLocation()
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => applyLoggedOutState(queryClient),
   })
+  const routeTitle = location.pathname.startsWith('/users/')
+    ? '用户详情'
+    : location.pathname === '/audit'
+      ? '审计记录'
+      : '概览'
+
+  useEffect(() => {
+    if (!location.hash) return
+    document
+      .getElementById(location.hash.slice(1))
+      ?.scrollIntoView({ block: 'start' })
+  }, [location.hash])
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <Link className="brand" to="/">
-          LX Sync
+      <aside className="sidebar">
+        <Link className="sidebar-brand" to="/" aria-label="LX Sync 概览">
+          <span className="brand-mark">LX</span>
+          <span>
+            <strong>LX Sync</strong>
+            <small>自托管同步</small>
+          </span>
         </Link>
         <nav aria-label="主导航">
-          <Link to="/">概览</Link>
-          <Link to="/audit">审计</Link>
+          <NavLink
+            to="/"
+            end
+            className={({ isActive }) =>
+              isActive || location.pathname.startsWith('/users/')
+                ? 'active'
+                : undefined
+            }
+          >
+            <LayoutDashboard aria-hidden="true" size={17} />
+            <span>概览</span>
+          </NavLink>
+          <NavLink to="/audit">
+            <ScrollText aria-hidden="true" size={17} />
+            <span>审计记录</span>
+          </NavLink>
         </nav>
-        <div className="account">
-          <span>{username}</span>
+        <div className="sidebar-footer">
+          <div className="connection-state">
+            <span aria-hidden="true" />
+            <div>
+              <strong>服务已连接</strong>
+              <small>{username}</small>
+            </div>
+          </div>
           <button
-            className="text-button"
+            className="sidebar-action"
             type="button"
             onClick={() => logout.mutate()}
             disabled={logout.isPending}
           >
-            退出
+            <LogOut aria-hidden="true" size={17} />
+            <span>{logout.isPending ? '退出中…' : '退出登录'}</span>
           </button>
         </div>
-      </header>
-      {logout.error && (
-        <div className="shell-notice">
-          <ErrorMessage error={logout.error} />
-        </div>
-      )}
-      <main className="content">{children}</main>
+      </aside>
+      <section className="workspace">
+        <header className="topbar">
+          <Link className="topbar-brand" to="/" aria-label="LX Sync 概览">
+            <span className="brand-mark compact">LX</span>
+            <strong>LX Sync</strong>
+          </Link>
+          <div className="topbar-context">
+            <span>控制台</span>
+            <i aria-hidden="true">/</i>
+            <strong>{routeTitle}</strong>
+          </div>
+          <div className="topbar-actions">
+            <button
+              className="topbar-button topbar-logout"
+              type="button"
+              onClick={() => logout.mutate()}
+              disabled={logout.isPending}
+            >
+              <LogOut aria-hidden="true" size={16} />
+              <span>退出</span>
+            </button>
+            <Link className="topbar-button primary" to="/#new-user">
+              <Plus aria-hidden="true" size={16} />
+              <span>新增用户</span>
+            </Link>
+          </div>
+        </header>
+        {logout.error && (
+          <div className="shell-notice">
+            <ErrorMessage error={logout.error} />
+          </div>
+        )}
+        <main className="content">{children}</main>
+      </section>
     </div>
   )
 }
@@ -202,21 +293,54 @@ function Dashboard() {
   return (
     <>
       <PageHeader
-        title="服务概览"
-        description="管理 LX Music v4 同步账号与运行状态。"
+        title="概览"
+        description="同步用户、在线设备与服务状态一览。"
+        actions={
+          <div className="page-actions">
+            <a className="button ghost" href="#users">
+              <UsersRound aria-hidden="true" size={16} />
+              管理用户
+            </a>
+            <a className="button primary" href="#new-user">
+              <Plus aria-hidden="true" size={16} />
+              新增用户
+            </a>
+          </div>
+        }
       />
       <section className="metric-grid" aria-label="服务状态">
+        <Metric
+          label="同步用户"
+          value={users.data?.data.length ?? '—'}
+          detail="已配置同步账号"
+          icon={UsersRound}
+          tone="site"
+          primary
+        />
+        <Metric
+          label="在线设备"
+          value={status.data?.onlineDevices ?? '—'}
+          detail="当前有效连接"
+          icon={Radio}
+          tone="success"
+        />
         <Metric
           label="服务状态"
           value={
             status.isSuccess ? '运行中' : status.isError ? '不可用' : '读取中'
           }
+          detail="每 15 秒自动刷新"
+          icon={Activity}
+          tone={status.isError ? 'danger' : 'info'}
         />
-        <Metric label="在线设备" value={status.data?.onlineDevices ?? '—'} />
-        <Metric label="同步用户" value={users.data?.data.length ?? '—'} />
         <Metric
           label="启动时间"
-          value={status.data ? formatDate(status.data.startedAt) : '—'}
+          value={status.data ? '已启动' : '—'}
+          detail={
+            status.data ? formatDate(status.data.startedAt) : '等待服务数据'
+          }
+          icon={Clock3}
+          tone="info"
         />
       </section>
       {(status.error || users.error) && (
@@ -224,11 +348,11 @@ function Dashboard() {
       )}
 
       <div className="two-column">
-        <section className="panel">
+        <section className="panel" id="users">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">USERS</p>
               <h2>同步用户</h2>
+              <p>管理访问码、设备与快照</p>
             </div>
           </div>
           {users.isPending ? (
@@ -256,9 +380,13 @@ function Dashboard() {
           )}
         </section>
 
-        <section className="panel">
-          <p className="eyebrow">CREATE</p>
-          <h2>新增同步用户</h2>
+        <section className="panel" id="new-user">
+          <div className="panel-heading">
+            <div>
+              <h2>新增同步用户</h2>
+              <p>创建账号并配置同步策略</p>
+            </div>
+          </div>
           <form className="stack" onSubmit={submit}>
             <Field label="用户名称" name="name" maxLength={64} required />
             <Field
@@ -647,10 +775,12 @@ function PageHeader({
   title,
   description,
   back = false,
+  actions,
 }: {
   title: string
   description: string
   back?: boolean
+  actions?: ReactNode
 }) {
   const navigate = useNavigate()
   return (
@@ -669,16 +799,37 @@ function PageHeader({
         <h1>{title}</h1>
         <p>{description}</p>
       </div>
+      {actions}
     </header>
   )
 }
 
-function Metric({ label, value }: { label: string; value: ReactNode }) {
+function Metric({
+  label,
+  value,
+  detail,
+  icon: Icon,
+  tone,
+  primary = false,
+}: {
+  label: string
+  value: ReactNode
+  detail: string
+  icon: LucideIcon
+  tone: 'site' | 'success' | 'danger' | 'info'
+  primary?: boolean
+}) {
   return (
-    <div className="metric">
-      <span>{label}</span>
+    <article
+      className={`metric metric-${tone}${primary ? ' primary-metric' : ''}`}
+    >
+      <span className="metric-label">
+        <Icon aria-hidden="true" size={16} />
+        {label}
+      </span>
       <strong>{value}</strong>
-    </div>
+      <small>{detail}</small>
+    </article>
   )
 }
 

@@ -265,3 +265,8 @@ docker compose start app
 LX 同步握手、消息行为和数据动作参考 [`lyswhut/lx-music-sync-server`](https://github.com/lyswhut/lx-music-sync-server) 的 Apache-2.0 实现，协议核对基线为提交 `d47aca4284a7c4d9ef755df1f44fb0b0a5b2af36`。`message2call` 以 MIT 许可证分发。
 
 项目代码采用 [Apache License 2.0](LICENSE)，第三方与上游说明见 [NOTICE](NOTICE)。LX Music 名称与相关标识归其权利人所有。
+
+## 参考项目
+
+- [`lyswhut/lx-music-sync-server`](https://github.com/lyswhut/lx-music-sync-server)
+- [`XCQ0607/lxserver`](https://github.com/XCQ0607/lxserver)

@@ -21,7 +21,7 @@ jobs:
     timeout-minutes: 20
     services:
       postgres:
-        image: postgres:18.4-bookworm@sha256:d9c83446333daec3f0588cc709adb80c26090b7f9f0f7ec8d43c243385d79818
+        image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
         env:
           POSTGRES_DB: lx_sync_test
           POSTGRES_USER: lx_sync

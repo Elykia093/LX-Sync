@@ -174,6 +174,17 @@ export async function buildApp(dependencies: AppDependencies) {
   })
 
   app.setErrorHandler((error, request, reply) => {
+    if (hasErrorCode(error, 'FST_ERR_CTP_INVALID_JSON_BODY')) {
+      sendProblem(
+        reply,
+        request,
+        400,
+        'INVALID_JSON',
+        'Bad Request',
+        'Request body is not valid JSON',
+      )
+      return
+    }
     if (error instanceof ZodError) {
       sendProblem(
         reply,
@@ -196,7 +207,7 @@ export async function buildApp(dependencies: AppDependencies) {
       )
       return
     }
-    if (hasDatabaseCode(error, '23505')) {
+    if (hasErrorCode(error, '23505')) {
       sendProblem(
         reply,
         request,
@@ -627,7 +638,7 @@ function problemTitle(status: number): string {
   return status >= 500 ? 'Internal Server Error' : 'Request Failed'
 }
 
-function hasDatabaseCode(error: unknown, code: string): boolean {
+function hasErrorCode(error: unknown, code: string): boolean {
   return (
     typeof error === 'object' &&
     error !== null &&

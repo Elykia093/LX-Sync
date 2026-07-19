@@ -170,6 +170,27 @@ describe('management authentication contract', () => {
     expect(rejectedOrigin.statusCode).toBe(403)
     expect(rejectedOrigin.json().code).toBe('ORIGIN_INVALID')
 
+    const invalidJson = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: {
+        'content-type': 'application/json',
+        origin: config.PUBLIC_ORIGIN,
+      },
+      payload: '{"username":',
+    })
+    expect(invalidJson.statusCode).toBe(400)
+    expect(invalidJson.headers['content-type']).toContain(
+      'application/problem+json',
+    )
+    expect(invalidJson.json()).toMatchObject({
+      type: 'about:blank',
+      title: 'Bad Request',
+      status: 400,
+      code: 'INVALID_JSON',
+      detail: 'Request body is not valid JSON',
+    })
+
     const login = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',

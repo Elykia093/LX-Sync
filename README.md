@@ -24,7 +24,7 @@ flowchart LR
   W["React 管理端"] -->|"同源 REST + HttpOnly Cookie"| S
   S --> E["同步引擎\nlist / dislike"]
   S --> A["管理 API\n用户 / 设备 / 快照 / 审计"]
-  E --> P[("PostgreSQL 18")]
+  E --> P[("PostgreSQL 18.4-alpine")]
   A --> P
 ```
 
@@ -32,15 +32,16 @@ flowchart LR
 
 ## 技术栈
 
-以下版本按 2026-07-18 的稳定/LTS 线精确锁定，不追 Current、RC 或 nightly：
+以下版本按 2026-07-20 的稳定/LTS 线精确锁定，不追 Current、RC 或 nightly。CI、容器与本地开发默认只验证表中的当前锁定基线；旧版本、旧发行变体和旧工具链不再作为适配目标。升级仍必须固定具体版本与 OCI digest，不能使用漂移的 `latest`。Docker Engine / Compose 一行记录的是本次测试服务器基线，GitHub-hosted runner 的 Docker 版本由平台管理：
 
 | 层 | 版本 |
 |---|---:|
 | Node.js | 24.18.0 LTS |
 | pnpm | 11.14.0 |
+| Docker Engine / Compose | 29.6.2 / 5.3.1 |
 | TypeScript | 7.0.2 |
 | Fastify / `@fastify/static` / `@fastify/cookie` | 5.10.0 / 10.1.0 / 11.1.2 |
-| PostgreSQL | 18.4 |
+| PostgreSQL | 18.4-alpine |
 | Kysely / `pg` | 0.29.4 / 8.22.0 |
 | `ws` | 8.21.1 |
 | Zod | 4.4.3 |
@@ -55,7 +56,7 @@ flowchart LR
 
 ## Docker 快速启动
 
-要求 Docker Engine 24+ 与 Compose v2。
+当前验证基线为 Docker Engine 29.6.2 与 Compose 5.3.1；旧版 Engine、Compose 和旧版 Compose 文件行为不作兼容保证。
 
 1. 复制环境模板并修改占位值：
 
@@ -110,7 +111,7 @@ docker compose down
 
 ## 本地开发
 
-要求 Node.js 24.18.0、pnpm 11.14.0 和 PostgreSQL 18.x。
+要求 Node.js 24.18.0、pnpm 11.14.0 和 PostgreSQL 18.4。Compose 默认启动固定的 `postgres:18.4-alpine`；旧 Node.js、pnpm、PostgreSQL 版本及其他 PostgreSQL 发行变体不作为适配目标。
 
 ```powershell
 corepack enable
@@ -289,7 +290,7 @@ docker compose start app
 - `pr-<PR 编号>` 会随 PR 更新，是便于测试的可变标签；需要固定测试输入时，应从发布摘要取得 digest 并使用 `ghcr.io/elykia093/lx-sync@sha256:<digest>`。手动触发仍只执行源码、PostgreSQL 和构建验证，不发布镜像。
 - 推送 `main` 会发布 `edge` 和 `sha-<完整提交 SHA>` 标签；`edge` 仅用于跟踪主干，不应作为生产部署标识。
 - 推送 `v*.*.*` tag 时，tag 必须精确等于 `v${package.json.version}`，根 package 与 server package 版本必须一致，且目标 commit 必须可从 `origin/main` 到达；通过后发布完整语义版本、`major.minor` 和 SHA 标签。
-- PostgreSQL 18.4 service 以 OCI digest 固定。工作流显式禁用 `latest`，先只推送 `candidate-<提交 SHA>`，用 `imagetools inspect` 确认 manifest 同时包含 amd64 与 arm64，并为该 digest 发布 SBOM 和 GitHub provenance attestation；全部成功后才提升 edge/semver/SHA 正式标签并逐一确认仍指向同一 digest。
+- PostgreSQL 18.4-alpine service 以 OCI digest 固定，并作为唯一数据库测试基线。工作流显式禁用 `latest`，先只推送 `candidate-<提交 SHA>`，用 `imagetools inspect` 确认 manifest 同时包含 amd64 与 arm64，并为该 digest 发布 SBOM 和 GitHub provenance attestation；全部成功后才提升 edge/semver/SHA 正式标签并逐一确认仍指向同一 digest。
 - 发布摘要会记录不可变 digest。生产部署与回滚必须使用 `ghcr.io/elykia093/lx-sync@sha256:<digest>`，不能只依赖可变标签。仓库内 `compose.yaml` 的 `lx-sync:0.1.0` 是本地源码构建标签，不代表已发布的 GHCR 制品。
 
 GitHub ruleset、tag 保护、required checks、GHCR 可见性和保留策略属于仓库外配置，工作流无法自行证明它们已启用。首次发布前应至少将上述 CI check 设为合并门禁，限制 release tag 的创建权限，并确认 GHCR 不会清理仍用于回滚的 digest。回滚应用时切换到上一条已验证 digest；数据库迁移仍按前述兼容性判断决定回滚或 roll-forward。

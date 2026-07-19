@@ -285,8 +285,8 @@ docker compose start app
 
 镜像工作流遵循以下规则：
 
-- 影响镜像的 PR 会预构建 `linux/amd64`、`linux/arm64`，但不登录仓库或推送制品。
-- 手动触发只执行源码、PostgreSQL 和构建验证，不发布镜像；只有 `main` 或合规版本 tag 的 push 会进入发布 job。
+- 影响镜像的 PR 默认只预构建 `linux/amd64`、`linux/arm64`，不登录仓库或推送制品。同仓库 PR 显式添加 `publish-image` 标签后，会发布 `pr-<PR 编号>` 和 SHA 测试标签；fork PR 无论标签如何都只有只读构建权限。
+- `pr-<PR 编号>` 会随 PR 更新，是便于测试的可变标签；需要固定测试输入时，应从发布摘要取得 digest 并使用 `ghcr.io/elykia093/lx-sync@sha256:<digest>`。手动触发仍只执行源码、PostgreSQL 和构建验证，不发布镜像。
 - 推送 `main` 会发布 `edge` 和 `sha-<完整提交 SHA>` 标签；`edge` 仅用于跟踪主干，不应作为生产部署标识。
 - 推送 `v*.*.*` tag 时，tag 必须精确等于 `v${package.json.version}`，根 package 与 server package 版本必须一致，且目标 commit 必须可从 `origin/main` 到达；通过后发布完整语义版本、`major.minor` 和 SHA 标签。
 - PostgreSQL 18.4 service 以 OCI digest 固定。工作流显式禁用 `latest`，先只推送 `candidate-<提交 SHA>`，用 `imagetools inspect` 确认 manifest 同时包含 amd64 与 arm64，并为该 digest 发布 SBOM 和 GitHub provenance attestation；全部成功后才提升 edge/semver/SHA 正式标签并逐一确认仍指向同一 digest。

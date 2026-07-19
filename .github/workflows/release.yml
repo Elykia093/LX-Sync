@@ -271,10 +271,18 @@ jobs:
           fi
 
           for tag in "${final_tags[@]}"; do
-            promoted_digest="$(
-              docker buildx imagetools inspect "$tag" \
-                | awk '/^Digest:/ { print $2; exit }'
-            )"
+            promoted_digest=""
+            for attempt in 1 2 3 4 5; do
+              if promoted_digest="$(
+                docker buildx imagetools inspect "$tag" \
+                  | awk '/^Digest:/ { print $2; exit }'
+              )" && [[ "$promoted_digest" == "$IMAGE_DIGEST" ]]; then
+                break
+              fi
+              if [[ "$attempt" -lt 5 ]]; then
+                sleep "$((attempt * 2))"
+              fi
+            done
             if [[ "$promoted_digest" != "$IMAGE_DIGEST" ]]; then
               echo "Promoted tag $tag resolved to $promoted_digest, expected $IMAGE_DIGEST" >&2
               exit 1

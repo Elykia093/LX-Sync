@@ -29,18 +29,20 @@ Cookie 属性：
 
 客户端只能按 `status` 和 `code` 分支，不应解析 `detail` 文案。
 
+JSON 请求体为空或语法无效时返回 `400 INVALID_JSON`；请求体超过 1 MiB 时返回 `413 PAYLOAD_TOO_LARGE`。两者均使用上述 Problem JSON，且不会回显原始请求体或解析器内部错误。
+
 ## 接口
 
 | 方法 | 路径 | 输入 | 成功响应 | 主要错误 |
 |---|---|---|---|---|
-| POST | `/api/v1/auth/login` | `{ username, password }` | `200 { username, expiresAt }` + Cookie | 400, 401, 403, 429 |
+| POST | `/api/v1/auth/login` | `{ username, password }` | `200 { username, expiresAt }` + Cookie | 400, 401, 403, 413, 429 |
 | POST | `/api/v1/auth/logout` | 无 | `204` + 清除 Cookie | 401, 403 |
 | GET | `/api/v1/auth/session` | 无 | `200 { username, expiresAt }` | 401 |
 | GET | `/api/v1/status` | 无 | `200 { serverId, serverName, startedAt, onlineDevices, syncBasePath }` | 401 |
 | GET | `/api/v1/users` | 无 | `200 { data: User[] }`，每个用户含只读 `syncPath` | 401 |
-| POST | `/api/v1/users` | `{ name, connectionCode, maxSnapshots?, addMusicLocationType? }` | `201 User` + `Location` | 400, 401, 403, 409 |
-| PATCH | `/api/v1/users/:userId` | `enabled`、`maxSnapshots`、`addMusicLocationType` 中至少一项 | `200 User` | 400, 401, 403, 404 |
-| PUT | `/api/v1/users/:userId/connection-credential` | `{ connectionCode }` | `204` | 400, 401, 403, 404 |
+| POST | `/api/v1/users` | `{ name, connectionCode, maxSnapshots?, addMusicLocationType? }` | `201 User` + `Location` | 400, 401, 403, 409, 413 |
+| PATCH | `/api/v1/users/:userId` | `enabled`、`maxSnapshots`、`addMusicLocationType` 中至少一项 | `200 User` | 400, 401, 403, 404, 413 |
+| PUT | `/api/v1/users/:userId/connection-credential` | `{ connectionCode }` | `204` | 400, 401, 403, 404, 413 |
 | GET | `/api/v1/users/:userId/devices` | 无 | `200 { data: Device[] }` | 401, 404 |
 | DELETE | `/api/v1/users/:userId/devices/:clientId` | 无 | `204`（幂等撤销） | 400, 401, 403, 404 |
 | GET | `/api/v1/users/:userId/sync-domains/:domain/snapshots` | `limit`，默认 50、最大 100 | `200 { data: Snapshot[] }` | 400, 401, 404 |

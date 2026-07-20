@@ -191,6 +191,35 @@ describe('management authentication contract', () => {
       detail: 'Request body is not valid JSON',
     })
 
+    const emptyJson = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: {
+        'content-type': 'application/json',
+        origin: config.PUBLIC_ORIGIN,
+      },
+      payload: '',
+    })
+    expect(emptyJson.statusCode).toBe(400)
+    expect(emptyJson.json().code).toBe('INVALID_JSON')
+
+    const oversizedJson = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: {
+        'content-type': 'application/json',
+        origin: config.PUBLIC_ORIGIN,
+      },
+      payload: `"${'a'.repeat(1024 * 1024)}"`,
+    })
+    expect(oversizedJson.statusCode).toBe(413)
+    expect(oversizedJson.json()).toMatchObject({
+      title: 'Payload Too Large',
+      status: 413,
+      code: 'PAYLOAD_TOO_LARGE',
+      detail: 'Request body exceeds the allowed size',
+    })
+
     const login = await app.inject({
       method: 'POST',
       url: '/api/v1/auth/login',

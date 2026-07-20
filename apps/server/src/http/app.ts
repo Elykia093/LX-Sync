@@ -174,7 +174,10 @@ export async function buildApp(dependencies: AppDependencies) {
   })
 
   app.setErrorHandler((error, request, reply) => {
-    if (hasErrorCode(error, 'FST_ERR_CTP_INVALID_JSON_BODY')) {
+    if (
+      hasErrorCode(error, 'FST_ERR_CTP_INVALID_JSON_BODY') ||
+      hasErrorCode(error, 'FST_ERR_CTP_EMPTY_JSON_BODY')
+    ) {
       sendProblem(
         reply,
         request,
@@ -182,6 +185,17 @@ export async function buildApp(dependencies: AppDependencies) {
         'INVALID_JSON',
         'Bad Request',
         'Request body is not valid JSON',
+      )
+      return
+    }
+    if (hasErrorCode(error, 'FST_ERR_CTP_BODY_TOO_LARGE')) {
+      sendProblem(
+        reply,
+        request,
+        413,
+        'PAYLOAD_TOO_LARGE',
+        'Payload Too Large',
+        'Request body exceeds the allowed size',
       )
       return
     }
@@ -634,6 +648,7 @@ function problemTitle(status: number): string {
   if (status === 403) return 'Forbidden'
   if (status === 404) return 'Not Found'
   if (status === 409) return 'Conflict'
+  if (status === 413) return 'Payload Too Large'
   if (status === 429) return 'Too Many Requests'
   return status >= 500 ? 'Internal Server Error' : 'Request Failed'
 }

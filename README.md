@@ -48,7 +48,7 @@ flowchart LR
 | React / React DOM | 19.2.7 |
 | Vite / React plugin | 8.1.5 / 6.0.3 |
 | React Router / TanStack Query | 7.18.1 / 5.101.2 |
-| Vitest / Biome | 4.1.10 / 2.5.4 |
+| Vitest / Playwright / Biome | 4.1.10 / 1.61.1 / 2.5.4 |
 
 唯一刻意保留的旧版本是 `message2call@0.1.3`。其 2.x 改变了 wire message 格式，而现有 LX 客户端和上游同步服务仍以 0.1.3 为协议基线；升级它属于协议迁移，不是普通依赖更新。
 
@@ -141,6 +141,8 @@ Vite 在 `http://localhost:5173` 提供管理端并代理 `/api`。生产构建�
 |---|---|
 | `pnpm typecheck` | 对 server 和 web 执行真实 TypeScript 类型检查 |
 | `pnpm test` | 运行 Vitest 测试 |
+| `pnpm test:coverage` | 运行 Vitest 并生成 server/web 覆盖率报告 |
+| `pnpm test:e2e` | 用 Chromium、真实服务与 PostgreSQL 运行管理端关键旅程 |
 | `pnpm --filter @lx-sync/server test:integration` | 使用 `TEST_DATABASE_URL` 运行真实 PostgreSQL 协议集成测试 |
 | `pnpm lint` | 运行 Biome 检查 |
 | `pnpm build` | 构建服务端 JS 和前端静态资源 |
@@ -155,6 +157,8 @@ pnpm --filter @lx-sync/server test:integration
 ```
 
 协议 E2E 的测试客户端固定于上述 LX v4 参考提交，自行实现握手常量、AES/MD5 和 `cg_` gzip codec，不导入服务端的协议或安全运行时代码；套件同时覆盖小型 message2call raw frame 与双向压缩帧，避免客户端和服务端同源漂移后仍一起通过。
+
+浏览器 E2E 需要先完成 `pnpm build`，并为服务端提供 `DATABASE_URL`、`MASTER_KEY`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`NODE_ENV=test`、`PUBLIC_ORIGIN=http://127.0.0.1:9527` 等测试环境变量。Playwright 会启动构建后的服务、等待 `/health/ready`，随后验证错误登录、管理员登录、用户创建、设置持久化、审计记录和退出登录；禁止指向生产数据库。覆盖率 HTML 报告位于 `coverage/server` 和 `coverage/web`，浏览器 HTML 报告位于 `playwright-report`，失败时 trace、video 与 screenshot 位于 `test-results`。CI 使用一次性 PostgreSQL 18.4 服务并上传这些报告。
 
 ## 环境变量
 

@@ -91,31 +91,55 @@ const isMusicInfo = (value: unknown): value is MusicInfo => {
   )
 }
 
-const isUserListInfoFull = (value: unknown): value is UserListInfoFull => {
-  return (
-    isRecord(value) &&
-    isBoundedJsonObject(value) &&
-    isBoundedString(value.id) &&
-    value.id.length > 0 &&
-    value.id.length <= syncLimits.maxIdentifierLength &&
-    isBoundedString(value.name) &&
-    value.name.length <= syncLimits.maxIdentifierLength &&
-    (value.locationUpdateTime === null ||
-      (typeof value.locationUpdateTime === 'number' &&
-        Number.isFinite(value.locationUpdateTime))) &&
-    (value.source === undefined ||
-      value.source === 'kw' ||
-      value.source === 'kg' ||
-      value.source === 'tx' ||
-      value.source === 'wy' ||
-      value.source === 'mg') &&
-    (value.sourceListId === undefined ||
-      (isBoundedString(value.sourceListId) &&
-        value.sourceListId.length <= syncLimits.maxIdentifierLength)) &&
-    Array.isArray(value.list) &&
-    value.list.length <= syncLimits.maxTracks &&
-    value.list.every(isMusicInfo)
+export const parseUserListInfo = (value: unknown): UserListInfo | null => {
+  if (
+    !isRecord(value) ||
+    !isBoundedJsonObject(value) ||
+    !isBoundedString(value.id) ||
+    value.id.length === 0 ||
+    value.id.length > syncLimits.maxIdentifierLength ||
+    !isBoundedString(value.name) ||
+    value.name.length > syncLimits.maxIdentifierLength ||
+    (value.locationUpdateTime !== undefined &&
+      value.locationUpdateTime !== null &&
+      (typeof value.locationUpdateTime !== 'number' ||
+        !Number.isFinite(value.locationUpdateTime))) ||
+    (value.source !== undefined &&
+      value.source !== 'kw' &&
+      value.source !== 'kg' &&
+      value.source !== 'tx' &&
+      value.source !== 'wy' &&
+      value.source !== 'mg') ||
+    (value.sourceListId !== undefined &&
+      !(
+        (isBoundedString(value.sourceListId) &&
+          value.sourceListId.length <= syncLimits.maxIdentifierLength) ||
+        (typeof value.sourceListId === 'number' &&
+          Number.isFinite(value.sourceListId))
+      ))
   )
+    return null
+
+  return {
+    ...value,
+    locationUpdateTime: value.locationUpdateTime ?? null,
+    ...(typeof value.sourceListId === 'number'
+      ? { sourceListId: String(value.sourceListId) }
+      : {}),
+  } as UserListInfo
+}
+
+const parseUserListInfoFull = (value: unknown): UserListInfoFull | null => {
+  const info = parseUserListInfo(value)
+  if (
+    !info ||
+    !isRecord(value) ||
+    !Array.isArray(value.list) ||
+    value.list.length > syncLimits.maxTracks ||
+    !value.list.every(isMusicInfo)
+  )
+    return null
+  return { ...info, list: value.list }
 }
 
 export function parseListData(value: unknown): ListData {
@@ -136,19 +160,21 @@ export function parseListData(value: unknown): ListData {
     !loveList.every(isMusicInfo)
   )
     throw new Error('Invalid love list')
-  if (
-    !Array.isArray(userList) ||
-    userList.length > syncLimits.maxUserLists ||
-    !userList.every(isUserListInfoFull)
-  )
+  if (!Array.isArray(userList) || userList.length > syncLimits.maxUserLists)
     throw new Error('Invalid user list')
-  const trackCount = userList.reduce(
+  const normalizedUserList: UserListInfoFull[] = []
+  for (const item of userList) {
+    const list = parseUserListInfoFull(item)
+    if (!list) throw new Error('Invalid user list')
+    normalizedUserList.push(list)
+  }
+  const trackCount = normalizedUserList.reduce(
     (total, list) => total + list.list.length,
     defaultList.length + loveList.length,
   )
   if (trackCount > syncLimits.maxTracks)
     throw new Error('List data exceeds the track limit')
-  return { defaultList, loveList, userList }
+  return { defaultList, loveList, userList: normalizedUserList }
 }
 
 export function parseSnapshot(domain: 'list', payload: string): ListData

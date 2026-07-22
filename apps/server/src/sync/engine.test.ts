@@ -27,6 +27,7 @@ class ListRepository implements SyncRepository {
   getHeadCalls = 0
   saveAttempts = 0
   markedSnapshots: string[] = []
+  savedData?: ListData
 
   constructor(
     private readonly conflictFirst: boolean,
@@ -93,6 +94,7 @@ class ListRepository implements SyncRepository {
     this.saveAttempts += 1
     if (this.conflictFirst && this.saveAttempts === 1)
       throw new SnapshotConflictError()
+    this.savedData = input.data
     return listSnapshot('saved', input.data)
   }
 
@@ -108,6 +110,7 @@ class ListRepository implements SyncRepository {
 
 function listConnection(input: {
   events: string[]
+  listData?: unknown
   setListData?: () => Promise<void>
 }): SyncConnection {
   return {
@@ -144,11 +147,12 @@ function listConnection(input: {
       onListSyncAction: async () => {},
       list_sync_get_md5: async () => 'remote-hash',
       list_sync_get_sync_mode: async () => 'merge_local_remote',
-      list_sync_get_list_data: async () => ({
-        defaultList: [{ id: 'song' }],
-        loveList: [],
-        userList: [],
-      }),
+      list_sync_get_list_data: async () =>
+        input.listData ?? {
+          defaultList: [{ id: 'song' }],
+          loveList: [],
+          userList: [],
+        },
       list_sync_set_list_data: async () => {
         input.events.push('set')
         await input.setListData?.()
@@ -175,6 +179,40 @@ const directHub: ConnectionHub = {
 }
 
 describe('SyncEngine initial synchronization', () => {
+  it('normalizes legacy playlist metadata before saving initial data', async () => {
+    const repository = new ListRepository(false, [])
+    const connection = listConnection({
+      events: [],
+      listData: {
+        defaultList: [],
+        loveList: [],
+        userList: [
+          {
+            id: 'legacy-list',
+            name: 'Legacy list',
+            sourceListId: 123456,
+            list: [],
+          },
+        ],
+      },
+    })
+    const engine = new SyncEngine(repository, directHub)
+
+    await engine.initialize(connection)
+
+    expect(repository.savedData?.userList).toEqual([
+      {
+        id: 'legacy-list',
+        name: 'Legacy list',
+        sourceListId: '123456',
+        locationUpdateTime: null,
+        list: [],
+      },
+    ])
+    expect(repository.markedSnapshots).toEqual(['saved'])
+    expect(connection.moduleReady.list).toBe(true)
+  })
+
   it('recomputes after a CAS conflict and advances the baseline last', async () => {
     const events: string[] = []
     const logs: Array<{ bindings: Record<string, unknown>; message: string }> =

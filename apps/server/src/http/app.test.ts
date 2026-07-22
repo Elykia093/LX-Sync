@@ -38,7 +38,9 @@ describe('management authentication contract', () => {
       }
     >()
     const disabledUserId = '00000000-0000-4000-8000-000000000001'
+    const createdUserId = '00000000-0000-4000-8000-000000000002'
     const auditActions: string[] = []
+    const createdAuthKeys: string[] = []
     const closeUserStarted = Promise.withResolvers<void>()
     const closeUserFinished = Promise.withResolvers<void>()
     const protocolAuthUsers: Array<string | null> = []
@@ -74,25 +76,37 @@ describe('management authentication contract', () => {
           createdAt: new Date('2026-01-01T00:00:00.000Z'),
         },
       ],
-      createUser: async (_input, audit) => {
+      createUser: async (input, audit) => {
+        createdAuthKeys.push(input.authKey)
         if (audit) auditActions.push(audit.action)
         return {
-          id: '00000000-0000-4000-8000-000000000000',
+          id: createdUserId,
           name: 'test',
         }
       },
-      getUserSummary: async (userId) =>
-        userId === disabledUserId
-          ? {
-              id: disabledUserId,
-              name: 'disabled user',
-              enabled: false,
-              maxSnapshots: 10,
-              addMusicLocationType: 'bottom',
-              deviceCount: 1,
-              createdAt: new Date('2026-01-01T00:00:00.000Z'),
-            }
-          : null,
+      getUserSummary: async (userId) => {
+        if (userId === disabledUserId)
+          return {
+            id: disabledUserId,
+            name: 'disabled user',
+            enabled: false,
+            maxSnapshots: 10,
+            addMusicLocationType: 'bottom',
+            deviceCount: 1,
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          }
+        if (userId === createdUserId)
+          return {
+            id: createdUserId,
+            name: 'test',
+            enabled: true,
+            maxSnapshots: 10,
+            addMusicLocationType: 'bottom',
+            deviceCount: 0,
+            createdAt: new Date('2026-01-01T00:00:00.000Z'),
+          }
+        return null
+      },
       updateUser: async (userId, _patch, audit) => {
         if (userId !== disabledUserId) return false
         if (audit) auditActions.push(audit.action)
@@ -260,6 +274,30 @@ describe('management authentication contract', () => {
       syncPath: `/base/${disabledUserId}`,
     })
 
+    const acceptedConnectionCodes = ['密', ' ', `! ${'x'.repeat(257)} 🙂`]
+    for (const [index, connectionCode] of acceptedConnectionCodes.entries()) {
+      const created = await app.inject({
+        method: 'POST',
+        url: '/api/v1/users',
+        headers: { cookie, origin: config.PUBLIC_ORIGIN },
+        payload: {
+          name: `unrestricted-code-${index}`,
+          connectionCode,
+        },
+      })
+      expect(created.statusCode).toBe(201)
+      expect(created.body).not.toContain(connectionCode)
+    }
+    expect(createdAuthKeys).toHaveLength(acceptedConnectionCodes.length)
+
+    const emptyConnectionCode = await app.inject({
+      method: 'POST',
+      url: '/api/v1/users',
+      headers: { cookie, origin: config.PUBLIC_ORIGIN },
+      payload: { name: 'empty-code', connectionCode: '' },
+    })
+    expect(emptyConnectionCode.statusCode).toBe(400)
+
     const disableRequest = app.inject({
       method: 'PATCH',
       url: `/api/v1/users/${disabledUserId}`,
@@ -275,6 +313,22 @@ describe('management authentication contract', () => {
       syncPath: `/base/${disabledUserId}`,
     })
     expect(auditActions).toContain('user.update')
+
+    const rotated = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/users/${disabledUserId}/connection-credential`,
+      headers: { cookie, origin: config.PUBLIC_ORIGIN },
+      payload: { connectionCode: ` ${'y'.repeat(257)} 符号!` },
+    })
+    expect(rotated.statusCode).toBe(204)
+
+    const emptyRotation = await app.inject({
+      method: 'PUT',
+      url: `/api/v1/users/${disabledUserId}/connection-credential`,
+      headers: { cookie, origin: config.PUBLIC_ORIGIN },
+      payload: { connectionCode: '' },
+    })
+    expect(emptyRotation.statusCode).toBe(400)
 
     const logoutWithoutOrigin = await app.inject({
       method: 'POST',

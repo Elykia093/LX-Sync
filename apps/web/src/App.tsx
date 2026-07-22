@@ -466,8 +466,6 @@ function Dashboard({ username }: { username: string }) {
               label="连接访问码"
               name="connectionCode"
               type="password"
-              minLength={8}
-              maxLength={256}
               required
             />
             <div className="form-grid">
@@ -623,8 +621,6 @@ function UserDetailContent({ user }: { user: SyncUser }) {
               label="新连接访问码"
               name="connectionCode"
               type="password"
-              minLength={8}
-              maxLength={256}
               required
             />
             {rotate.error && <ErrorMessage error={rotate.error} />}

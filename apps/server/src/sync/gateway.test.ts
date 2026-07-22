@@ -77,14 +77,20 @@ describe('LX gateway proxy boundary', () => {
 })
 
 describe('LX gateway path boundary', () => {
-  it('accepts only the root or configured per-user path', () => {
+  it('accepts legacy and mobile WebSocket paths within the configured scope', () => {
     const userId = '00000000-0000-4000-8000-000000000001'
     expect(resolveSyncPath('/', '/base')).toEqual({ kind: 'root' })
+    expect(resolveSyncPath('/socket', '/base')).toEqual({ kind: 'root' })
     expect(resolveSyncPath(`/base/${userId}`, '/base')).toEqual({
       kind: 'scoped',
       userId,
     })
+    expect(resolveSyncPath(`/base/${userId}/socket`, '/base')).toEqual({
+      kind: 'scoped',
+      userId,
+    })
     expect(resolveSyncPath('/unexpected', '/base')).toBeNull()
+    expect(resolveSyncPath(`/base/${userId}/unexpected`, '/base')).toBeNull()
   })
 })
 

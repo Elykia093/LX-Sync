@@ -113,8 +113,8 @@ Compose 固定 PostgreSQL 18.4-alpine OCI digest，等待数据库健康后启�
 - `GET /hello` 返回固定 `Hello~::^-^::~v4~`。
 - `GET /id` 返回固定前缀加持久化 server ID。
 - `GET /ah` 完成访问码或已登记设备的 HTTP 认证。
-- 根路径 WebSocket upgrade 使用 query `i`（设备 ID）和 `t`（设备密文）。
-- 配置 `SYNC_BASE_PATH` 后增加 `/<base>/:userId/hello|id|ah` 和 scoped WebSocket；根入口始终保留。
+- 根路径和 `/socket` WebSocket upgrade 使用 query `i`（设备 ID）和 `t`（设备密文）；前者保留旧客户端兼容，后者是洛雪移动端使用的入口。
+- 配置 `SYNC_BASE_PATH` 后增加 `/<base>/:userId/hello|id|ah` 和 `/<base>/:userId` / `/<base>/:userId/socket` scoped WebSocket；根入口始终保留。
 
 用户 UUID 只缩小候选范围，不是凭据。scoped 设备必须同时属于目标用户。
 

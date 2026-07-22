@@ -7,6 +7,8 @@ describe('synchronization paths', () => {
   it('keeps the root WebSocket path available with or without scoping', () => {
     expect(resolveSyncPath('/', undefined)).toEqual({ kind: 'root' })
     expect(resolveSyncPath('/', '/base')).toEqual({ kind: 'root' })
+    expect(resolveSyncPath('/socket', undefined)).toEqual({ kind: 'root' })
+    expect(resolveSyncPath('/socket/', '/base')).toEqual({ kind: 'root' })
   })
 
   it('recognizes only valid scoped user paths', () => {
@@ -22,7 +24,16 @@ describe('synchronization paths', () => {
       kind: 'scoped',
       userId,
     })
+    expect(resolveSyncPath(`/base/${userId}/socket`, '/base')).toEqual({
+      kind: 'scoped',
+      userId,
+    })
+    expect(resolveSyncPath(`/base/${userId}/socket/`, '/base')).toEqual({
+      kind: 'scoped',
+      userId,
+    })
     expect(resolveSyncPath('/base/not-a-user', '/base')).toBeNull()
+    expect(resolveSyncPath(`/base/${userId}/socket-extra`, '/base')).toBeNull()
     expect(resolveSyncPath(`/other/${userId}`, '/base')).toBeNull()
     expect(resolveSyncPath(`/base/${userId}`, undefined)).toBeNull()
   })

@@ -548,11 +548,12 @@ async function connectClient(input: {
   })
 
   const websocketOrigin = input.origin.replace(/^http/, 'ws')
+  const websocketPath = input.isMobile ? '/socket' : '/'
   const token = encodeURIComponent(
     fixtureEncryptProtocolMessage(upstreamLxV4.connectMessage, device.key),
   )
   socket = new WebSocket(
-    `${websocketOrigin}/?i=${encodeURIComponent(device.clientId)}&t=${token}`,
+    `${websocketOrigin}${websocketPath}?i=${encodeURIComponent(device.clientId)}&t=${token}`,
   )
   socket.on('message', (data, isBinary) => {
     if (isBinary) return

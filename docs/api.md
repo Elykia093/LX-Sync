@@ -51,7 +51,7 @@ JSON 请求体为空或语法无效时返回 `400 INVALID_JSON`；请求体超�
 
 `PATCH /users/:userId` 将“字段缺失”解释为保持不变；当前可写字段均不接受 `null`，空对象会被拒绝。设备 `DELETE` 表示撤销而非物理删除，重复调用返回 `204`，不会泄露设备是否曾存在。轮换连接访问码、停用用户、撤销设备和恢复快照都会断开受影响的在线连接。
 
-访问码只在请求中短暂出现，服务端仅保存其派生密钥的 AES-256-GCM 密文；API、日志和审计记录均不回显访问码。
+访问码必须是非空字符串。服务端不裁剪内容，也不设置字符集或字段级长度限制；空格、符号和 Unicode 均按原样参与密钥派生。整个 JSON 请求仍受 1 MiB 请求体上限约束。访问码只在请求中短暂出现，服务端仅保存其派生密钥的 AES-256-GCM 密文；API、日志和审计记录均不回显访问码。
 
 `syncBasePath` 和 `User.syncPath` 在 `SYNC_BASE_PATH` 未启用时为 `null`。启用后，`syncBasePath` 返回配置的前缀，`User.syncPath` 返回可直接附加到公开 Origin 的用户同步路径。两个字段均为只读、向后兼容的新增响应字段；滚动部署或回滚期间，管理端会把旧服务缺失的字段解释为 `null`。
 
@@ -62,8 +62,8 @@ JSON 请求体为空或语法无效时返回 `400 INVALID_JSON`；请求体超�
 
 ## LX 兼容接口
 
-`GET /hello`、`GET /id`、`GET /ah` 保留 LX Music v4 固定握手。WebSocket upgrade 使用根路径和 query `i`（设备 ID）、`t`（设备密文）鉴权；这两个 query 只属于上游兼容协议，不能用于管理 API。
+`GET /hello`、`GET /id`、`GET /ah` 保留 LX Music v4 固定握手。WebSocket upgrade 兼容根路径（旧客户端）和 `/socket`（洛雪移动端），并使用 query `i`（设备 ID）、`t`（设备密文）鉴权；这两个 query 只属于上游兼容协议，不能用于管理 API。
 
-设置 `SYNC_BASE_PATH=/base` 后，同时提供 `/base/:userId/hello`、`/base/:userId/id`、`/base/:userId/ah` 和 `/base/:userId` WebSocket upgrade。`:userId` 必须是 UUID；scoped `/ah` 只加载现有且启用的目标用户，已登记设备还必须属于该用户。未知、停用或不匹配的用户仍按协议认证失败处理。路径只用于候选隔离，不能替代连接访问码、设备密钥或 TLS。管理 API、SPA 和静态资源仍部署在根路径；该配置不是整站 `BASE_PATH`。
+设置 `SYNC_BASE_PATH=/base` 后，同时提供 `/base/:userId/hello`、`/base/:userId/id`、`/base/:userId/ah` 和 `/base/:userId` / `/base/:userId/socket` WebSocket upgrade。`:userId` 必须是 UUID；scoped `/ah` 只加载现有且启用的目标用户，已登记设备还必须属于该用户。未知、停用或不匹配的用户仍按协议认证失败处理。路径只用于候选隔离，不能替代连接访问码、设备密钥或 TLS。管理 API、SPA 和静态资源仍部署在根路径；该配置不是整站 `BASE_PATH`。
 
 兼容端点刻意保留上游纯文本响应和 `message2call@0.1.3` wire format。2.x 改变了消息格式，不能直接升级。

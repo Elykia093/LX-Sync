@@ -64,7 +64,7 @@ const loginSchema = z
 const createUserSchema = z
   .object({
     name: z.string().trim().min(1).max(64),
-    connectionCode: z.string().min(8).max(256),
+    connectionCode: z.string().min(1),
     maxSnapshots: z.number().int().min(1).max(1000).optional(),
     addMusicLocationType: z.enum(['top', 'bottom']).optional(),
   })
@@ -83,7 +83,7 @@ const updateUserSchema = z
   )
 
 const credentialSchema = z
-  .object({ connectionCode: z.string().min(8).max(256) })
+  .object({ connectionCode: z.string().min(1) })
   .strict()
 const userParamsSchema = z.object({ userId: z.string().uuid() }).strict()
 const syncUserParamsSchema = z

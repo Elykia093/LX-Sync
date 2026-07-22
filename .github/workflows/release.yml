@@ -77,12 +77,13 @@ jobs:
           node <<'NODE'
           const rootVersion = require('./package.json').version
           const serverVersion = require('./apps/server/package.json').version
+          const webVersion = require('./apps/web/package.json').version
           const expectedTag = `v${rootVersion}`
           const actualTag = process.env.GITHUB_REF_NAME
 
-          if (serverVersion !== rootVersion) {
+          if (serverVersion !== rootVersion || webVersion !== rootVersion) {
             throw new Error(
-              `Version mismatch: package.json=${rootVersion}, apps/server/package.json=${serverVersion}`,
+              `Version mismatch: package.json=${rootVersion}, apps/server/package.json=${serverVersion}, apps/web/package.json=${webVersion}`,
             )
           }
           if (actualTag !== expectedTag) {

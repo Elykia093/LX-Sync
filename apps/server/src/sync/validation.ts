@@ -9,6 +9,7 @@ import {
   isBoundedJsonObject,
   isBoundedString,
   parseListData,
+  parseUserListInfo,
   syncLimits,
 } from './snapshot.js'
 
@@ -62,18 +63,16 @@ const isMusicArray = (value: unknown): value is MusicInfo[] => {
   )
 }
 
-const isUserListInfo = (value: unknown): value is UserListInfo => {
-  return (
-    isRecord(value) &&
-    isBoundedString(value.id) &&
-    value.id.length > 0 &&
-    value.id.length <= syncLimits.maxIdentifierLength &&
-    isBoundedString(value.name) &&
-    value.name.length <= syncLimits.maxIdentifierLength &&
-    (value.locationUpdateTime === null ||
-      (typeof value.locationUpdateTime === 'number' &&
-        Number.isFinite(value.locationUpdateTime)))
-  )
+const parseUserListInfos = (value: unknown): UserListInfo[] | null => {
+  if (!Array.isArray(value) || value.length > syncLimits.maxUserLists)
+    return null
+  const infos: UserListInfo[] = []
+  for (const item of value) {
+    const info = parseUserListInfo(item)
+    if (!info) return null
+    infos.push(info)
+  }
+  return infos
 }
 
 const isLocation = (value: unknown): value is 'top' | 'bottom' =>
@@ -104,30 +103,23 @@ export function parseListAction(value: unknown): ListAction {
   switch (value.action) {
     case 'list_data_overwrite':
       return { action: value.action, data: parseListData(data) }
-    case 'list_create':
-      if (
-        !isRecord(data) ||
-        !isPosition(data.position) ||
-        !Array.isArray(data.listInfos) ||
-        data.listInfos.length > syncLimits.maxUserLists ||
-        !data.listInfos.every(isUserListInfo)
-      )
-        break
+    case 'list_create': {
+      if (!isRecord(data) || !isPosition(data.position)) break
+      const listInfos = parseUserListInfos(data.listInfos)
+      if (!listInfos) break
       return {
         action: value.action,
-        data: { position: data.position, listInfos: data.listInfos },
+        data: { position: data.position, listInfos },
       }
+    }
     case 'list_remove':
       if (isStringArray(data)) return { action: value.action, data }
       break
-    case 'list_update':
-      if (
-        Array.isArray(data) &&
-        data.length <= syncLimits.maxUserLists &&
-        data.every(isUserListInfo)
-      )
-        return { action: value.action, data }
+    case 'list_update': {
+      const listInfos = parseUserListInfos(data)
+      if (listInfos) return { action: value.action, data: listInfos }
       break
+    }
     case 'list_update_position':
       if (
         isRecord(data) &&

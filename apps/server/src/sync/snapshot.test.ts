@@ -85,6 +85,117 @@ describe('snapshot actions', () => {
     ).toThrow('Invalid default list')
   })
 
+  it('normalizes legacy playlist metadata in snapshots', () => {
+    expect(
+      parseListData({
+        defaultList: [],
+        loveList: [],
+        userList: [
+          {
+            id: 'legacy-list',
+            name: 'Legacy list',
+            source: 'wy',
+            sourceListId: 123456,
+            list: [],
+          },
+        ],
+      }).userList,
+    ).toEqual([
+      {
+        id: 'legacy-list',
+        name: 'Legacy list',
+        source: 'wy',
+        sourceListId: '123456',
+        locationUpdateTime: null,
+        list: [],
+      },
+    ])
+  })
+
+  it('normalizes legacy playlist metadata in incremental actions', () => {
+    expect(
+      parseListAction({
+        action: 'list_create',
+        data: {
+          position: 0,
+          listInfos: [
+            {
+              id: 'created-list',
+              name: 'Created list',
+              sourceListId: 42,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      action: 'list_create',
+      data: {
+        position: 0,
+        listInfos: [
+          {
+            id: 'created-list',
+            name: 'Created list',
+            sourceListId: '42',
+            locationUpdateTime: null,
+          },
+        ],
+      },
+    })
+
+    expect(
+      parseListAction({
+        action: 'list_update',
+        data: [
+          {
+            id: 'updated-list',
+            name: 'Updated list',
+            sourceListId: 84,
+          },
+        ],
+      }),
+    ).toEqual({
+      action: 'list_update',
+      data: [
+        {
+          id: 'updated-list',
+          name: 'Updated list',
+          sourceListId: '84',
+          locationUpdateTime: null,
+        },
+      ],
+    })
+  })
+
+  it('rejects invalid legacy playlist metadata values', () => {
+    expect(() =>
+      parseListData({
+        defaultList: [],
+        loveList: [],
+        userList: [
+          {
+            id: 'invalid-list',
+            name: 'Invalid list',
+            sourceListId: Number.POSITIVE_INFINITY,
+            list: [],
+          },
+        ],
+      }),
+    ).toThrow('Invalid list data')
+
+    expect(() =>
+      parseListAction({
+        action: 'list_update',
+        data: [
+          {
+            id: 'invalid-list',
+            name: 'Invalid list',
+            locationUpdateTime: 'yesterday',
+          },
+        ],
+      }),
+    ).toThrow('Invalid list action')
+  })
+
   it('rejects JSON metadata deeper than the protocol limit', () => {
     let metadata: unknown = 'value'
     for (let depth = 0; depth <= syncLimits.maxJsonDepth; depth += 1)

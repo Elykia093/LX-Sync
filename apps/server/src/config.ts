@@ -7,6 +7,42 @@ const base64Key = z.string().refine((value) => {
   )
 }, 'must be a base64 encoded 32-byte key')
 
+const syncBasePath = z.preprocess(
+  (value) =>
+    typeof value === 'string' && value.trim() === '' ? undefined : value,
+  z
+    .string()
+    .trim()
+    .min(2)
+    .max(128)
+    .regex(
+      /^\/[A-Za-z0-9._~-]+(?:\/[A-Za-z0-9._~-]+)*$/,
+      'must be an absolute path without a trailing slash',
+    )
+    .refine(
+      (value) =>
+        value
+          .split('/')
+          .every((segment) => segment !== '.' && segment !== '..'),
+      'must not contain relative path segments',
+    )
+    .refine(
+      (value) =>
+        !new Set([
+          'api',
+          'health',
+          'hello',
+          'id',
+          'ah',
+          'users',
+          'audit',
+          'assets',
+        ]).has(value.split('/')[1] ?? ''),
+      'must not shadow a reserved application path',
+    )
+    .optional(),
+)
+
 const configSchema = z.object({
   NODE_ENV: z
     .enum(['development', 'test', 'production'])
@@ -30,6 +66,7 @@ const configSchema = z.object({
     .transform((value) => value.replace(/\/$/, ''))
     .optional(),
   WEB_DIST_PATH: z.string().min(1).optional(),
+  SYNC_BASE_PATH: syncBasePath,
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info'),

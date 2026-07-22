@@ -10,6 +10,7 @@ import {
 export type AuthRepository = Pick<
   Repository,
   | 'getDevice'
+  | 'getUser'
   | 'touchDevice'
   | 'getEnabledUsersForAuthentication'
   | 'registerDevice'
@@ -87,6 +88,7 @@ export class LxAuthService {
     ip: string
     encryptedMessage?: string
     clientId?: string
+    userId?: string
   }): Promise<ProtocolAuthResult> {
     if (!this.limiter.isAllowed(input.ip))
       return { statusCode: 403, body: LX_SYNC.blockedIpMessage }
@@ -95,7 +97,8 @@ export class LxAuthService {
 
     if (input.clientId) {
       const device = await this.repository.getDevice(input.clientId)
-      if (!device) return this.failed(input.ip)
+      if (!device || (input.userId && device.userId !== input.userId))
+        return this.failed(input.ip)
       try {
         const text = decryptProtocolMessage(input.encryptedMessage, device.key)
         if (!text.startsWith(LX_SYNC.authMessagePrefix))
@@ -114,7 +117,12 @@ export class LxAuthService {
       }
     }
 
-    for (const user of await this.repository.getEnabledUsersForAuthentication()) {
+    const users = input.userId
+      ? await this.repository
+          .getUser(input.userId)
+          .then((user) => (user?.enabled ? [user] : []))
+      : await this.repository.getEnabledUsersForAuthentication()
+    for (const user of users) {
       let text: string
       try {
         text = decryptProtocolMessage(input.encryptedMessage, user.authKey)
@@ -163,6 +171,7 @@ export class LxAuthService {
     ip: string
     clientId: string | null
     token: string | null
+    userId?: string
   }): Promise<DeviceRecord | null> {
     if (
       !this.limiter.isAllowed(input.ip) ||
@@ -172,7 +181,7 @@ export class LxAuthService {
     )
       return null
     const device = await this.repository.getDevice(input.clientId)
-    if (!device) return null
+    if (!device || (input.userId && device.userId !== input.userId)) return null
     try {
       if (
         decryptProtocolMessage(input.token, device.key) !==

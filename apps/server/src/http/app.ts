@@ -18,6 +18,7 @@ import {
 import type { LxAuthService } from '../sync/auth.js'
 import { AttemptLimiter } from '../sync/auth.js'
 import type { ConnectionRegistry } from '../sync/gateway.js'
+import { syncPathForUser } from '../sync/path.js'
 
 export const sessionCookieName = 'lx_sync_session'
 
@@ -50,6 +51,7 @@ export interface AppDependencies {
   registry: Pick<ConnectionRegistry, 'count' | 'closeUser' | 'closeDevice'>
   serverId: string
   startedAt: Date
+  loggerStream?: { write(message: string): void }
 }
 
 const loginSchema = z
@@ -84,6 +86,14 @@ const credentialSchema = z
   .object({ connectionCode: z.string().min(8).max(256) })
   .strict()
 const userParamsSchema = z.object({ userId: z.string().uuid() }).strict()
+const syncUserParamsSchema = z
+  .object({
+    userId: z
+      .string()
+      .uuid()
+      .transform((value) => value.toLowerCase()),
+  })
+  .strict()
 const deviceParamsSchema = userParamsSchema
   .extend({ clientId: z.string().min(1).max(256) })
   .strict()
@@ -119,12 +129,16 @@ export async function buildApp(dependencies: AppDependencies) {
             level: config.LOG_LEVEL,
             redact: {
               paths: [
+                'req.url',
                 'req.headers.authorization',
                 'req.headers.cookie',
                 'res.headers.set-cookie',
               ],
               censor: '[Redacted]',
             },
+            ...(dependencies.loggerStream
+              ? { stream: dependencies.loggerStream }
+              : {}),
           },
   })
 
@@ -160,6 +174,31 @@ export async function buildApp(dependencies: AppDependencies) {
   })
 
   app.setErrorHandler((error, request, reply) => {
+    if (
+      hasErrorCode(error, 'FST_ERR_CTP_INVALID_JSON_BODY') ||
+      hasErrorCode(error, 'FST_ERR_CTP_EMPTY_JSON_BODY')
+    ) {
+      sendProblem(
+        reply,
+        request,
+        400,
+        'INVALID_JSON',
+        'Bad Request',
+        'Request body is not valid JSON',
+      )
+      return
+    }
+    if (hasErrorCode(error, 'FST_ERR_CTP_BODY_TOO_LARGE')) {
+      sendProblem(
+        reply,
+        request,
+        413,
+        'PAYLOAD_TOO_LARGE',
+        'Payload Too Large',
+        'Request body exceeds the allowed size',
+      )
+      return
+    }
     if (error instanceof ZodError) {
       sendProblem(
         reply,
@@ -182,7 +221,7 @@ export async function buildApp(dependencies: AppDependencies) {
       )
       return
     }
-    if (hasDatabaseCode(error, '23505')) {
+    if (hasErrorCode(error, '23505')) {
       sendProblem(
         reply,
         request,
@@ -214,15 +253,15 @@ export async function buildApp(dependencies: AppDependencies) {
     }
   })
 
-  app.get('/hello', async (_request, reply) =>
-    reply.type('text/plain').send(LX_SYNC.helloMessage),
-  )
-  app.get('/id', async (_request, reply) =>
-    reply
-      .type('text/plain')
-      .send(`${LX_SYNC.idPrefix}${dependencies.serverId}`),
-  )
-  app.get('/ah', async (request, reply) => {
+  const sendHello = (_request: FastifyRequest, reply: FastifyReply) =>
+    reply.type('text/plain').send(LX_SYNC.helloMessage)
+  const sendServerId = (_request: FastifyRequest, reply: FastifyReply) =>
+    reply.type('text/plain').send(`${LX_SYNC.idPrefix}${dependencies.serverId}`)
+  const authenticateProtocol = async (
+    request: FastifyRequest,
+    reply: FastifyReply,
+    userId?: string,
+  ) => {
     const result = await dependencies.auth.authenticateHttp({
       ip: request.ip,
       ...(typeof request.headers.m === 'string'
@@ -231,9 +270,34 @@ export async function buildApp(dependencies: AppDependencies) {
       ...(typeof request.headers.i === 'string'
         ? { clientId: request.headers.i }
         : {}),
+      ...(userId ? { userId } : {}),
     })
-    return reply.status(result.statusCode).type('text/plain').send(result.body)
-  })
+    return reply
+      .header('Cache-Control', 'no-store')
+      .status(result.statusCode)
+      .type('text/plain')
+      .send(result.body)
+  }
+
+  app.get('/hello', sendHello)
+  app.get('/id', sendServerId)
+  app.get('/ah', (request, reply) => authenticateProtocol(request, reply))
+
+  if (config.SYNC_BASE_PATH) {
+    const scopedProtocolPath = `${config.SYNC_BASE_PATH}/:userId`
+    app.get(`${scopedProtocolPath}/hello`, async (request, reply) => {
+      syncUserParamsSchema.parse(request.params)
+      return sendHello(request, reply)
+    })
+    app.get(`${scopedProtocolPath}/id`, async (request, reply) => {
+      syncUserParamsSchema.parse(request.params)
+      return sendServerId(request, reply)
+    })
+    app.get(`${scopedProtocolPath}/ah`, async (request, reply) => {
+      const { userId } = syncUserParamsSchema.parse(request.params)
+      return authenticateProtocol(request, reply, userId)
+    })
+  }
 
   await app.register(
     async (api) => {
@@ -320,10 +384,13 @@ export async function buildApp(dependencies: AppDependencies) {
           serverName: config.SERVER_NAME,
           startedAt: dependencies.startedAt,
           onlineDevices: dependencies.registry.count(),
+          syncBasePath: config.SYNC_BASE_PATH ?? null,
         }))
 
         protectedApi.get('/users', async () => ({
-          data: await repository.listUsers(),
+          data: (await repository.listUsers()).map((user) =>
+            withSyncPath(user, config),
+          ),
         }))
 
         protectedApi.post('/users', async (request, reply) => {
@@ -350,7 +417,7 @@ export async function buildApp(dependencies: AppDependencies) {
               'Created user could not be read',
             )
           reply.header('Location', `/api/v1/users/${created.id}`)
-          return reply.status(201).send(user)
+          return reply.status(201).send(withSyncPath(user, config))
         })
 
         protectedApi.patch('/users/:userId', async (request) => {
@@ -383,7 +450,7 @@ export async function buildApp(dependencies: AppDependencies) {
           const user = await repository.getUserSummary(userId)
           if (!user)
             throw new AppError(404, 'USER_NOT_FOUND', 'User was not found')
-          return user
+          return withSyncPath(user, config)
         })
 
         protectedApi.put(
@@ -532,6 +599,13 @@ function sessionFor(
   return session
 }
 
+function withSyncPath<T extends { id: string }>(user: T, config: AppConfig) {
+  return {
+    ...user,
+    syncPath: syncPathForUser(config.SYNC_BASE_PATH, user.id),
+  }
+}
+
 async function requireUser(
   repository: AppDependencies['repository'],
   userId: string,
@@ -574,11 +648,12 @@ function problemTitle(status: number): string {
   if (status === 403) return 'Forbidden'
   if (status === 404) return 'Not Found'
   if (status === 409) return 'Conflict'
+  if (status === 413) return 'Payload Too Large'
   if (status === 429) return 'Too Many Requests'
   return status >= 500 ? 'Internal Server Error' : 'Request Failed'
 }
 
-function hasDatabaseCode(error: unknown, code: string): boolean {
+function hasErrorCode(error: unknown, code: string): boolean {
   return (
     typeof error === 'object' &&
     error !== null &&

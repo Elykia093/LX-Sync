@@ -1,6 +1,6 @@
 services:
   db:
-    image: postgres:18.4-bookworm
+    image: postgres:18.4-alpine@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
     restart: unless-stopped
     environment:
       POSTGRES_DB: lx_sync
@@ -46,6 +46,7 @@ services:
       MAX_SNAPSHOTS: ${MAX_SNAPSHOTS:-10}
       TRUST_PROXY: ${TRUST_PROXY:-false}
       PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:9527}
+      SYNC_BASE_PATH: ${SYNC_BASE_PATH:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9527/health/ready').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"]

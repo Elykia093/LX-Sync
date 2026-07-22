@@ -28,6 +28,8 @@ export interface ClientDislikeRemote {
 }
 
 export interface SyncConnection {
+  connectionId: string
+  pathMode: 'root' | 'scoped'
   active: boolean
   device: DeviceRecord
   user: SyncUserRecord

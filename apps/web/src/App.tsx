@@ -4,12 +4,38 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query'
-import type { FormEvent, InputHTMLAttributes, ReactNode } from 'react'
+import {
+  Activity,
+  Check,
+  ChevronDown,
+  Clock3,
+  Copy,
+  Home,
+  LayoutDashboard,
+  LogOut,
+  type LucideIcon,
+  Menu,
+  Plus,
+  Radio,
+  ScrollText,
+  Settings2,
+  UsersRound,
+  X,
+} from 'lucide-react'
+import {
+  type FormEvent,
+  type InputHTMLAttributes,
+  type ReactNode,
+  useEffect,
+  useState,
+} from 'react'
 import {
   Link,
   Navigate,
+  NavLink,
   Route,
   Routes,
+  useLocation,
   useNavigate,
   useParams,
 } from 'react-router-dom'
@@ -20,6 +46,7 @@ import {
   type Session,
   type Snapshot,
   type SyncUser,
+  sessionExpiredEventName,
 } from './api.js'
 
 export const queryKeys = {
@@ -39,12 +66,20 @@ export function sessionLoginError(error: unknown): ApiError | null {
 }
 
 export function App() {
+  const queryClient = useQueryClient()
   const session = useQuery<Session | null>({
     queryKey: queryKeys.session,
     queryFn: api.session,
     retry: false,
     refetchInterval: 60_000,
   })
+  useEffect(() => {
+    const expireSession = () => applyLoggedOutState(queryClient)
+    window.addEventListener(sessionExpiredEventName, expireSession)
+    return () =>
+      window.removeEventListener(sessionExpiredEventName, expireSession)
+  }, [queryClient])
+
   if (session.isPending) return <Centered>正在读取会话…</Centered>
   if (session.data === null) return <LoginPage serviceError={null} />
   const loginError = sessionLoginError(session.error)
@@ -62,7 +97,10 @@ export function App() {
   return (
     <AppShell username={session.data.username}>
       <Routes>
-        <Route path="/" element={<Dashboard />} />
+        <Route
+          path="/"
+          element={<Dashboard username={session.data.username} />}
+        />
         <Route path="/users/:userId" element={<UserDetail />} />
         <Route path="/audit" element={<AuditPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
@@ -91,33 +129,48 @@ function LoginPage({ serviceError }: { serviceError: ApiError | null }) {
   return (
     <main className="login-page">
       <section className="login-card" aria-labelledby="login-title">
-        <p className="eyebrow">SELF-HOSTED SYNC</p>
-        <h1 id="login-title">LX Sync</h1>
-        <p className="muted">登录后管理同步用户、设备与快照。</p>
-        {serviceError && (
-          <p className="notice error" role="status">
-            后端服务未连接，当前仅可预览登录界面（HTTP {serviceError.status}）。
-          </p>
-        )}
-        <form className="stack" onSubmit={submit}>
-          <Field
-            label="管理员账号"
-            name="username"
-            autoComplete="username"
-            required
-          />
-          <Field
-            label="管理员密码"
-            name="password"
-            type="password"
-            autoComplete="current-password"
-            required
-          />
-          {login.error && <ErrorMessage error={login.error} />}
-          <button className="primary" type="submit" disabled={login.isPending}>
-            {login.isPending ? '登录中…' : '登录'}
-          </button>
-        </form>
+        <div className="login-card-body">
+          <div className="login-brand">
+            <span className="brand-mark large">LX</span>
+            <strong>LX Sync</strong>
+          </div>
+          <div className="login-heading">
+            <h1 id="login-title">登录你的账号</h1>
+            <p>进入 LX Sync 管理控制台</p>
+          </div>
+          {serviceError && (
+            <p className="notice error" role="status">
+              后端服务未连接，当前仅可预览登录界面（HTTP {serviceError.status}
+              ）。
+            </p>
+          )}
+          <form className="stack login-form" onSubmit={submit}>
+            <Field
+              label="管理员账号"
+              name="username"
+              placeholder="请输入管理员账号"
+              autoComplete="username"
+              required
+            />
+            <Field
+              label="管理员密码"
+              name="password"
+              placeholder="请输入管理员密码"
+              type="password"
+              autoComplete="current-password"
+              required
+            />
+            {login.error && <ErrorMessage error={login.error} />}
+            <button
+              className="primary login-submit"
+              type="submit"
+              disabled={login.isPending}
+            >
+              {login.isPending ? '登录中…' : '登录'}
+            </button>
+          </form>
+        </div>
+        <footer className="login-card-footer">自托管 LX Music 同步服务</footer>
       </section>
     </main>
   )
@@ -131,44 +184,160 @@ function AppShell({
   children: ReactNode
 }) {
   const queryClient = useQueryClient()
+  const location = useLocation()
+  const [sidebarOpen, setSidebarOpen] = useState(false)
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => applyLoggedOutState(queryClient),
   })
+  const routeTitle = location.pathname.startsWith('/users/')
+    ? '用户详情'
+    : location.pathname === '/audit'
+      ? '审计记录'
+      : '概览'
+
+  useEffect(() => {
+    if (!location.hash) return
+    document
+      .getElementById(location.hash.slice(1))
+      ?.scrollIntoView({ block: 'start' })
+  }, [location.hash])
 
   return (
     <div className="app-shell">
-      <header className="topbar">
-        <Link className="brand" to="/">
-          LX Sync
+      <header className="mobile-header">
+        <Link
+          className="mobile-brand"
+          to="/"
+          aria-label="LX Sync 概览"
+          onClick={() => setSidebarOpen(false)}
+        >
+          <span className="brand-mark compact">LX</span>
+          <span>
+            <strong>LX Sync</strong>
+            <small>{routeTitle}</small>
+          </span>
         </Link>
+        <button
+          className="menu-toggle"
+          type="button"
+          aria-label={sidebarOpen ? '关闭导航' : '打开导航'}
+          aria-expanded={sidebarOpen}
+          onClick={() => setSidebarOpen((open) => !open)}
+        >
+          {sidebarOpen ? (
+            <X aria-hidden="true" size={20} />
+          ) : (
+            <Menu aria-hidden="true" size={20} />
+          )}
+        </button>
+      </header>
+      <aside className={`sidebar${sidebarOpen ? ' open' : ''}`}>
+        <Link
+          className="sidebar-brand"
+          to="/"
+          aria-label="LX Sync 概览"
+          onClick={() => setSidebarOpen(false)}
+        >
+          <span className="brand-mark">LX</span>
+          <strong>LX Sync</strong>
+          <span className="admin-pill">Admin</span>
+        </Link>
+        <button
+          className="sidebar-close"
+          type="button"
+          aria-label="关闭导航"
+          onClick={() => setSidebarOpen(false)}
+        >
+          <X aria-hidden="true" size={19} />
+        </button>
+        <div className="sidebar-profile">
+          <span className="profile-avatar">
+            {username.slice(0, 1).toUpperCase()}
+            <i aria-hidden="true" />
+          </span>
+          <span>
+            <strong>{username}</strong>
+            <small>系统管理员</small>
+          </span>
+        </div>
         <nav aria-label="主导航">
-          <Link to="/">概览</Link>
-          <Link to="/audit">审计</Link>
+          <div className="nav-group">
+            <div className="nav-group-title">
+              <LayoutDashboard aria-hidden="true" size={16} />
+              <span>概览</span>
+              <ChevronDown aria-hidden="true" size={16} />
+            </div>
+            <div className="nav-group-items">
+              <NavLink
+                to="/"
+                end
+                onClick={() => setSidebarOpen(false)}
+                className={({ isActive }) =>
+                  isActive || location.pathname.startsWith('/users/')
+                    ? 'active'
+                    : undefined
+                }
+              >
+                <Home aria-hidden="true" size={16} />
+                <span>首页</span>
+              </NavLink>
+            </div>
+          </div>
+          <div className="nav-group">
+            <div className="nav-group-title">
+              <Settings2 aria-hidden="true" size={16} />
+              <span>系统管理</span>
+              <ChevronDown aria-hidden="true" size={16} />
+            </div>
+            <div className="nav-group-items">
+              <NavLink to="/audit" onClick={() => setSidebarOpen(false)}>
+                <ScrollText aria-hidden="true" size={16} />
+                <span>审计记录</span>
+              </NavLink>
+            </div>
+          </div>
         </nav>
-        <div className="account">
-          <span>{username}</span>
+        <div className="sidebar-footer">
+          <div className="connection-state">
+            <span aria-hidden="true" />
+            <div>
+              <strong>服务已连接</strong>
+              <small>{username}</small>
+            </div>
+          </div>
           <button
-            className="text-button"
+            className="sidebar-action"
             type="button"
             onClick={() => logout.mutate()}
             disabled={logout.isPending}
           >
-            退出
+            <LogOut aria-hidden="true" size={17} />
+            <span>{logout.isPending ? '退出中…' : '退出登录'}</span>
           </button>
         </div>
-      </header>
-      {logout.error && (
-        <div className="shell-notice">
-          <ErrorMessage error={logout.error} />
-        </div>
+      </aside>
+      {sidebarOpen && (
+        <button
+          className="sidebar-backdrop"
+          type="button"
+          aria-label="关闭导航"
+          onClick={() => setSidebarOpen(false)}
+        />
       )}
-      <main className="content">{children}</main>
+      <section className="workspace">
+        {logout.error && (
+          <div className="shell-notice">
+            <ErrorMessage error={logout.error} />
+          </div>
+        )}
+        <main className="content">{children}</main>
+      </section>
     </div>
   )
 }
 
-function Dashboard() {
+function Dashboard({ username }: { username: string }) {
   const queryClient = useQueryClient()
   const status = useQuery({
     queryKey: queryKeys.status,
@@ -202,36 +371,64 @@ function Dashboard() {
   return (
     <>
       <PageHeader
-        title="服务概览"
-        description="管理 LX Music v4 同步账号与运行状态。"
+        title={`${getGreeting()}，${username}`}
+        description="这是您的同步服务数据概览"
+        actions={
+          <div className="page-actions">
+            <a className="button primary" href="#new-user">
+              <Plus aria-hidden="true" size={16} />
+              新增用户
+            </a>
+          </div>
+        }
       />
       <section className="metric-grid" aria-label="服务状态">
+        <Metric
+          label="同步用户"
+          value={users.data?.data.length ?? '—'}
+          detail="已配置同步账号"
+          icon={UsersRound}
+          tone="site"
+        />
+        <Metric
+          label="在线设备"
+          value={status.data?.onlineDevices ?? '—'}
+          detail="当前有效连接"
+          icon={Radio}
+          tone="success"
+        />
         <Metric
           label="服务状态"
           value={
             status.isSuccess ? '运行中' : status.isError ? '不可用' : '读取中'
           }
+          detail="每 15 秒自动刷新"
+          icon={Activity}
+          tone={status.isError ? 'danger' : 'info'}
         />
-        <Metric label="在线设备" value={status.data?.onlineDevices ?? '—'} />
-        <Metric label="同步用户" value={users.data?.data.length ?? '—'} />
         <Metric
           label="启动时间"
-          value={status.data ? formatDate(status.data.startedAt) : '—'}
+          value={status.data ? '已启动' : '—'}
+          detail={
+            status.data ? formatDate(status.data.startedAt) : '等待服务数据'
+          }
+          icon={Clock3}
+          tone="info"
         />
       </section>
-      {(status.error || users.error) && (
-        <ErrorMessage error={status.error ?? users.error} />
-      )}
+      {status.error && <ErrorMessage error={status.error} />}
 
       <div className="two-column">
-        <section className="panel">
+        <section className="panel" id="users">
           <div className="panel-heading">
             <div>
-              <p className="eyebrow">USERS</p>
               <h2>同步用户</h2>
+              <p>管理访问码、设备与快照</p>
             </div>
           </div>
-          {users.isPending ? (
+          {users.error ? (
+            <ErrorMessage error={users.error} />
+          ) : users.isPending ? (
             <p className="muted">正在加载…</p>
           ) : users.data?.data.length ? (
             <div className="user-list">
@@ -256,9 +453,13 @@ function Dashboard() {
           )}
         </section>
 
-        <section className="panel">
-          <p className="eyebrow">CREATE</p>
-          <h2>新增同步用户</h2>
+        <section className="panel" id="new-user">
+          <div className="panel-heading">
+            <div>
+              <h2>新增同步用户</h2>
+              <p>创建账号并配置同步策略</p>
+            </div>
+          </div>
           <form className="stack" onSubmit={submit}>
             <Field label="用户名称" name="name" maxLength={64} required />
             <Field
@@ -372,6 +573,7 @@ function UserDetailContent({ user }: { user: SyncUser }) {
         <section className="panel">
           <p className="eyebrow">SETTINGS</p>
           <h2>同步设置</h2>
+          <SyncAddress syncPath={user.syncPath} />
           <form className="stack" onSubmit={saveSettings}>
             <label className="checkbox">
               <input
@@ -447,9 +649,12 @@ function UserDetailContent({ user }: { user: SyncUser }) {
             <h2>设备</h2>
           </div>
         </div>
-        {devices.error && <ErrorMessage error={devices.error} />}
         {revoke.error && <ErrorMessage error={revoke.error} />}
-        {devices.data?.data.length ? (
+        {devices.error ? (
+          <ErrorMessage error={devices.error} />
+        ) : devices.isPending ? (
+          <p className="muted">正在加载设备…</p>
+        ) : devices.data?.data.length ? (
           <div className="table-wrap">
             <table>
               <thead>
@@ -495,6 +700,44 @@ function UserDetailContent({ user }: { user: SyncUser }) {
         />
       </div>
     </>
+  )
+}
+
+function SyncAddress({ syncPath }: { syncPath: string | null }) {
+  const [copied, setCopied] = useState(false)
+  const address = syncAddress(window.location.origin, syncPath)
+
+  const copyAddress = async () => {
+    if (!navigator.clipboard) return
+    try {
+      await navigator.clipboard.writeText(address)
+      setCopied(true)
+    } catch {
+      setCopied(false)
+    }
+  }
+
+  return (
+    <div className="sync-address">
+      <span>同步服务地址</span>
+      <div className="sync-address-value">
+        <code>{address}</code>
+        <button
+          type="button"
+          className="icon-button"
+          title="复制同步服务地址"
+          aria-label="复制同步服务地址"
+          onClick={() => void copyAddress()}
+        >
+          {copied ? (
+            <Check aria-hidden="true" size={17} />
+          ) : (
+            <Copy aria-hidden="true" size={17} />
+          )}
+        </button>
+      </div>
+      <small>{syncPath ? '独立同步路径已启用' : '使用兼容根路径'}</small>
+    </div>
   )
 }
 
@@ -560,32 +803,35 @@ function SnapshotPanel({
       {snapshots.error && <ErrorMessage error={snapshots.error} />}
       {restore.error && <ErrorMessage error={restore.error} />}
       <div className="snapshot-list">
-        {snapshots.data?.data.map((snapshot: Snapshot) => (
-          <div className="snapshot-row" key={snapshot.id}>
-            <span>
-              <strong>{formatDate(snapshot.createdAt)}</strong>
-              <small>
-                {snapshot.itemCount} 项 · {formatBytes(snapshot.byteSize)}
-              </small>
-            </span>
-            <button
-              className="text-button"
-              type="button"
-              disabled={restore.isPending}
-              onClick={() => {
-                if (
-                  window.confirm(
-                    `恢复 ${formatDate(snapshot.createdAt)} 的快照会替换当前 ${title} 并断开相关在线设备。继续吗？`,
+        {snapshots.isPending ? (
+          <p className="muted">正在加载快照…</p>
+        ) : snapshots.error ? null : snapshots.data?.data.length ? (
+          snapshots.data.data.map((snapshot: Snapshot) => (
+            <div className="snapshot-row" key={snapshot.id}>
+              <span>
+                <strong>{formatDate(snapshot.createdAt)}</strong>
+                <small>
+                  {snapshot.itemCount} 项 · {formatBytes(snapshot.byteSize)}
+                </small>
+              </span>
+              <button
+                className="text-button"
+                type="button"
+                disabled={restore.isPending}
+                onClick={() => {
+                  if (
+                    window.confirm(
+                      `恢复 ${formatDate(snapshot.createdAt)} 的快照会替换当前 ${title} 并断开相关在线设备。继续吗？`,
+                    )
                   )
-                )
-                  restore.mutate(snapshot.id)
-              }}
-            >
-              恢复
-            </button>
-          </div>
-        ))}
-        {!snapshots.isPending && !snapshots.data?.data.length && (
+                    restore.mutate(snapshot.id)
+                }}
+              >
+                恢复
+              </button>
+            </div>
+          ))
+        ) : (
           <Empty>暂无快照。</Empty>
         )}
       </div>
@@ -605,8 +851,11 @@ function AuditPage() {
         description="管理端关键写操作，不包含访问码或会话值。"
       />
       <section className="panel">
-        {audit.error && <ErrorMessage error={audit.error} />}
-        {audit.data?.data.length ? (
+        {audit.error ? (
+          <ErrorMessage error={audit.error} />
+        ) : audit.isPending ? (
+          <p className="muted">正在加载审计记录…</p>
+        ) : audit.data?.data.length ? (
           <div className="table-wrap">
             <table>
               <thead>
@@ -636,7 +885,7 @@ function AuditPage() {
             </table>
           </div>
         ) : (
-          !audit.isPending && <Empty>暂无审计记录。</Empty>
+          <Empty>暂无审计记录。</Empty>
         )}
       </section>
     </>
@@ -647,10 +896,12 @@ function PageHeader({
   title,
   description,
   back = false,
+  actions,
 }: {
   title: string
   description: string
   back?: boolean
+  actions?: ReactNode
 }) {
   const navigate = useNavigate()
   return (
@@ -669,16 +920,35 @@ function PageHeader({
         <h1>{title}</h1>
         <p>{description}</p>
       </div>
+      {actions}
     </header>
   )
 }
 
-function Metric({ label, value }: { label: string; value: ReactNode }) {
+function Metric({
+  label,
+  value,
+  detail,
+  icon: Icon,
+  tone,
+}: {
+  label: string
+  value: ReactNode
+  detail: string
+  icon: LucideIcon
+  tone: 'site' | 'success' | 'danger' | 'info'
+}) {
   return (
-    <div className="metric">
-      <span>{label}</span>
+    <article className={`metric metric-${tone}`}>
+      <div className="metric-heading">
+        <span>{label}</span>
+        <span className="metric-icon">
+          <Icon aria-hidden="true" size={16} />
+        </span>
+      </div>
       <strong>{value}</strong>
-    </div>
+      <small>{detail}</small>
+    </article>
   )
 }
 
@@ -732,9 +1002,24 @@ function shortId(value: string) {
   return value.length > 16 ? `${value.slice(0, 8)}…${value.slice(-6)}` : value
 }
 
+function getGreeting() {
+  const hour = new Date().getHours()
+  if (hour < 6) return '夜深了'
+  if (hour < 9) return '早上好'
+  if (hour < 12) return '上午好'
+  if (hour < 14) return '中午好'
+  if (hour < 18) return '下午好'
+  if (hour < 22) return '晚上好'
+  return '夜深了'
+}
+
 export function applyLoggedOutState(queryClient: QueryClient): void {
   queryClient.removeQueries({
     predicate: (query) => query.queryKey[0] !== queryKeys.session[0],
   })
   queryClient.setQueryData<Session | null>(queryKeys.session, null)
+}
+
+export function syncAddress(origin: string, syncPath: string | null): string {
+  return `${origin}${syncPath ?? ''}`
 }

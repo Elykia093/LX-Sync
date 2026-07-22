@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { CamelCasePlugin, Kysely, PostgresDialect } from 'kysely'
 import { FileMigrationProvider, Migrator } from 'kysely/migration'
 import { Pool } from 'pg'
@@ -25,7 +25,12 @@ export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
   )
   const migrator = new Migrator({
     db,
-    provider: new FileMigrationProvider({ fs, path, migrationFolder }),
+    provider: new FileMigrationProvider({
+      fs,
+      path,
+      migrationFolder,
+      import: (modulePath) => import(pathToFileURL(modulePath).href),
+    }),
   })
   const { error, results } = await migrator.migrateToLatest()
   for (const result of results ?? []) {

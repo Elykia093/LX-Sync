@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { ConnectionRegistry, resolveUpgradeIp } from './gateway.js'
+import { resolveSyncPath } from './path.js'
 import type { SyncConnection } from './types.js'
 
 function connectionFor(
@@ -8,6 +9,8 @@ function connectionFor(
   close: () => void,
 ): SyncConnection {
   return {
+    connectionId: `connection-${clientId}`,
+    pathMode: 'root',
     active: true,
     device: {
       clientId,
@@ -70,6 +73,18 @@ describe('LX gateway proxy boundary', () => {
         trustProxy: true,
       }),
     ).toBe('198.51.100.10')
+  })
+})
+
+describe('LX gateway path boundary', () => {
+  it('accepts only the root or configured per-user path', () => {
+    const userId = '00000000-0000-4000-8000-000000000001'
+    expect(resolveSyncPath('/', '/base')).toEqual({ kind: 'root' })
+    expect(resolveSyncPath(`/base/${userId}`, '/base')).toEqual({
+      kind: 'scoped',
+      userId,
+    })
+    expect(resolveSyncPath('/unexpected', '/base')).toBeNull()
   })
 })
 

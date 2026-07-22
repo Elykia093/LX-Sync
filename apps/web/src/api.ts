@@ -10,6 +10,7 @@ const statusSchema = z.object({
   serverName: z.string(),
   startedAt: timestampSchema,
   onlineDevices: z.number(),
+  syncBasePath: z.string().nullable().default(null),
 })
 const userSchema = z.object({
   id: z.string().uuid(),
@@ -19,6 +20,7 @@ const userSchema = z.object({
   addMusicLocationType: z.enum(['top', 'bottom']),
   deviceCount: z.number(),
   createdAt: timestampSchema,
+  syncPath: z.string().nullable().default(null),
 })
 const deviceSchema = z.object({
   clientId: z.string(),
@@ -59,6 +61,11 @@ export type Device = z.infer<typeof deviceSchema>
 export type Snapshot = z.infer<typeof snapshotSchema>
 export type AuditEvent = z.infer<typeof auditEventSchema>
 
+export const parseServerStatus = (value: unknown): ServerStatus =>
+  statusSchema.parse(value)
+export const parseSyncUser = (value: unknown): SyncUser =>
+  userSchema.parse(value)
+
 export class ApiError extends Error {
   constructor(
     public readonly status: number,
@@ -69,6 +76,17 @@ export class ApiError extends Error {
     super(message)
     this.name = 'ApiError'
   }
+}
+
+export const sessionExpiredEventName = 'lx-sync:session-expired'
+
+export function shouldExpireSession(path: string, error: ApiError): boolean {
+  return path !== '/auth/login' && error.status === 401
+}
+
+function notifySessionExpired(path: string, error: ApiError): void {
+  if (typeof window === 'undefined' || !shouldExpireSession(path, error)) return
+  window.dispatchEvent(new Event(sessionExpiredEventName))
 }
 
 async function request<T>(
@@ -85,7 +103,11 @@ async function request<T>(
       ...init?.headers,
     },
   })
-  if (!response.ok) throw await responseError(response)
+  if (!response.ok) {
+    const error = await responseError(response)
+    notifySessionExpired(path, error)
+    throw error
+  }
   return schema.parse(await response.json())
 }
 
@@ -99,7 +121,11 @@ async function requestVoid(path: string, init: RequestInit): Promise<void> {
       ...init.headers,
     },
   })
-  if (!response.ok) throw await responseError(response)
+  if (!response.ok) {
+    const error = await responseError(response)
+    notifySessionExpired(path, error)
+    throw error
+  }
 }
 
 async function responseError(response: Response): Promise<ApiError> {

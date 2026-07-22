@@ -7,10 +7,12 @@
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "dev": "vite",
     "test": "vitest run --passWithNoTests",
+    "test:coverage": "vitest run --coverage",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@tanstack/react-query": "5.101.2",
+    "lucide-react": "1.25.0",
     "react": "19.2.7",
     "react-dom": "19.2.7",
     "react-router-dom": "7.18.1",

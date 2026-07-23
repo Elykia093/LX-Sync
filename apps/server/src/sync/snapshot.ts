@@ -105,12 +105,14 @@ export const parseUserListInfo = (value: unknown): UserListInfo | null => {
       (typeof value.locationUpdateTime !== 'number' ||
         !Number.isFinite(value.locationUpdateTime))) ||
     (value.source !== undefined &&
+      value.source !== null &&
       value.source !== 'kw' &&
       value.source !== 'kg' &&
       value.source !== 'tx' &&
       value.source !== 'wy' &&
       value.source !== 'mg') ||
     (value.sourceListId !== undefined &&
+      value.sourceListId !== null &&
       !(
         (isBoundedString(value.sourceListId) &&
           value.sourceListId.length <= syncLimits.maxIdentifierLength) ||
@@ -120,12 +122,12 @@ export const parseUserListInfo = (value: unknown): UserListInfo | null => {
   )
     return null
 
+  const { source, sourceListId, locationUpdateTime, ...rest } = value
   return {
-    ...value,
-    locationUpdateTime: value.locationUpdateTime ?? null,
-    ...(typeof value.sourceListId === 'number'
-      ? { sourceListId: String(value.sourceListId) }
-      : {}),
+    ...rest,
+    ...(source == null ? {} : { source }),
+    ...(sourceListId == null ? {} : { sourceListId: String(sourceListId) }),
+    locationUpdateTime: locationUpdateTime ?? null,
   } as UserListInfo
 }
 

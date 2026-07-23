@@ -112,6 +112,34 @@ describe('snapshot actions', () => {
     ])
   })
 
+  it('normalizes nullable desktop playlist metadata in snapshots', () => {
+    expect(
+      parseListData({
+        defaultList: [],
+        loveList: [],
+        userList: [
+          {
+            id: 'desktop-list',
+            name: 'Desktop list',
+            source: null,
+            sourceListId: null,
+            locationUpdateTime: null,
+            metadata: { preserved: true },
+            list: [],
+          },
+        ],
+      }).userList,
+    ).toEqual([
+      {
+        id: 'desktop-list',
+        name: 'Desktop list',
+        locationUpdateTime: null,
+        metadata: { preserved: true },
+        list: [],
+      },
+    ])
+  })
+
   it('normalizes legacy playlist metadata in incremental actions', () => {
     expect(
       parseListAction({
@@ -160,6 +188,62 @@ describe('snapshot actions', () => {
           id: 'updated-list',
           name: 'Updated list',
           sourceListId: '84',
+          locationUpdateTime: null,
+        },
+      ],
+    })
+  })
+
+  it('normalizes nullable desktop metadata in incremental actions', () => {
+    expect(
+      parseListAction({
+        action: 'list_create',
+        data: {
+          position: 0,
+          listInfos: [
+            {
+              id: 'created-list',
+              name: 'Created list',
+              source: null,
+              sourceListId: null,
+              locationUpdateTime: null,
+            },
+          ],
+        },
+      }),
+    ).toEqual({
+      action: 'list_create',
+      data: {
+        position: 0,
+        listInfos: [
+          {
+            id: 'created-list',
+            name: 'Created list',
+            locationUpdateTime: null,
+          },
+        ],
+      },
+    })
+
+    expect(
+      parseListAction({
+        action: 'list_update',
+        data: [
+          {
+            id: 'updated-list',
+            name: 'Updated list',
+            source: null,
+            sourceListId: null,
+            locationUpdateTime: null,
+          },
+        ],
+      }),
+    ).toEqual({
+      action: 'list_update',
+      data: [
+        {
+          id: 'updated-list',
+          name: 'Updated list',
           locationUpdateTime: null,
         },
       ],

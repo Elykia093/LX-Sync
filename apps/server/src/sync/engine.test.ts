@@ -213,6 +213,41 @@ describe('SyncEngine initial synchronization', () => {
     expect(connection.moduleReady.list).toBe(true)
   })
 
+  it('accepts nullable desktop playlist metadata during initial sync', async () => {
+    const repository = new ListRepository(false, [])
+    const connection = listConnection({
+      events: [],
+      listData: {
+        defaultList: [],
+        loveList: [],
+        userList: [
+          {
+            id: 'desktop-list',
+            name: 'Desktop list',
+            source: null,
+            sourceListId: null,
+            locationUpdateTime: null,
+            list: [],
+          },
+        ],
+      },
+    })
+    const engine = new SyncEngine(repository, directHub)
+
+    await engine.initialize(connection)
+
+    expect(repository.savedData?.userList).toEqual([
+      {
+        id: 'desktop-list',
+        name: 'Desktop list',
+        locationUpdateTime: null,
+        list: [],
+      },
+    ])
+    expect(repository.markedSnapshots).toEqual(['saved'])
+    expect(connection.moduleReady.list).toBe(true)
+  })
+
   it('recomputes after a CAS conflict and advances the baseline last', async () => {
     const events: string[] = []
     const logs: Array<{ bindings: Record<string, unknown>; message: string }> =

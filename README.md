@@ -5,12 +5,14 @@
 > [!IMPORTANT]
 > 本项目是非官方实现，与 LX Music / 洛雪音乐助手及其作者没有隶属或背书关系。当前状态为 **Alpha**，请先在非关键数据上验证，并建立可恢复备份。
 
+当前版本说明：[LX-Sync v0.2.0](docs/releases/v0.2.0.md)。
+
 ## 能做什么
 
 - 兼容 LX Music v4 的 `/hello`、`/id`、`/ah` 与 WebSocket 同步流程。
 - 同步歌单和“不喜欢”规则，处理多设备增量合并与冲突重试。
 - 用 PostgreSQL 保存每个同步域的当前 head、设备同步基线和有限历史快照。
-- 管理同步用户、连接访问码、设备撤销、快照恢复和审计记录。
+- 管理同步用户、连接访问码、设备撤销、歌单创建/改名/删除与歌曲批量移动/复制/移除、快照恢复、快照 JSON 导出和审计记录。
 - 使用不透明 HttpOnly Cookie 保护同源管理端。
 - 单容器运行 Fastify API、LX WebSocket 和 React 静态资源。
 
@@ -23,7 +25,7 @@ flowchart LR
   LX["LX Music 客户端"] -->|"HTTP 握手 + WebSocket"| S["Fastify 单进程服务"]
   W["React 管理端"] -->|"同源 REST + HttpOnly Cookie"| S
   S --> E["同步引擎\nlist / dislike"]
-  S --> A["管理 API\n用户 / 设备 / 快照 / 审计"]
+  S --> A["管理 API\n用户 / 设备 / 歌单 / 快照 / 审计"]
   E --> P[("PostgreSQL")]
   A --> P
 ```
@@ -41,7 +43,7 @@ flowchart LR
 | Docker Engine / Compose | 29.6.2 / 5.3.1 |
 | TypeScript | 7.0.2 |
 | Fastify / `@fastify/static` / `@fastify/cookie` | 5.10.0 / 10.1.0 / 11.1.2 |
-| PostgreSQL | 18.4-alpine |
+| PostgreSQL | 18-alpine |
 | Kysely / `pg` | 0.29.4 / 8.22.0 |
 | `ws` | 8.21.1 |
 | Zod | 4.4.3 |
@@ -111,7 +113,7 @@ docker compose down
 
 ## 本地开发
 
-要求 Node.js 24.18.0、pnpm 11.14.0 和 PostgreSQL 18.4。Compose 默认启动固定的 `postgres:18.4-alpine`；旧 Node.js、pnpm、PostgreSQL 版本及其他 PostgreSQL 发行变体不作为适配目标。
+要求 Node.js 24.18.0、pnpm 11.14.0 和 PostgreSQL 18。Compose 默认启动固定的 `postgres:18-alpine`；旧 Node.js、pnpm、PostgreSQL 版本及其他 PostgreSQL 发行变体不作为适配目标。
 
 ```powershell
 corepack enable
@@ -158,7 +160,7 @@ pnpm --filter @lx-sync/server test:integration
 
 协议 E2E 的测试客户端固定于上述 LX v4 参考提交，自行实现握手常量、AES/MD5 和 `cg_` gzip codec，不导入服务端的协议或安全运行时代码；套件同时覆盖小型 message2call raw frame 与双向压缩帧，避免客户端和服务端同源漂移后仍一起通过。
 
-浏览器 E2E 需要先完成 `pnpm build`，并为服务端提供 `DATABASE_URL`、`MASTER_KEY`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`NODE_ENV=test`、`PUBLIC_ORIGIN=http://127.0.0.1:9527` 等测试环境变量。Playwright 会启动构建后的服务、等待 `/health/ready`，随后验证错误登录、管理员登录、用户创建、设置持久化、审计记录和退出登录；禁止指向生产数据库。覆盖率 HTML 报告位于 `coverage/server` 和 `coverage/web`，浏览器 HTML 报告位于 `playwright-report`，失败时 trace、video 与 screenshot 位于 `test-results`。CI 使用一次性 PostgreSQL 18.4 服务并上传这些报告。
+浏览器 E2E 需要先完成 `pnpm build`，并为服务端提供 `DATABASE_URL`、`MASTER_KEY`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`NODE_ENV=test`、`PUBLIC_ORIGIN=http://127.0.0.1:9527` 等测试环境变量。Playwright 会启动构建后的服务、等待 `/health/ready`，随后验证错误登录、管理员登录、用户创建、设置持久化、审计记录和退出登录；禁止指向生产数据库。覆盖率 HTML 报告位于 `coverage/server` 和 `coverage/web`，浏览器 HTML 报告位于 `playwright-report`，失败时 trace、video 与 screenshot 位于 `test-results`。CI 使用一次性 PostgreSQL 18 服务并上传这些报告。
 
 ## 环境变量
 
@@ -293,9 +295,9 @@ docker compose start app
 - 影响镜像的 PR 默认只预构建 `linux/amd64`、`linux/arm64`，不登录仓库或推送制品。同仓库 PR 显式添加 `publish-image` 标签后，会发布 `pr-<PR 编号>` 和 SHA 测试标签；fork PR 无论标签如何都只有只读构建权限。
 - `pr-<PR 编号>` 会随 PR 更新，是便于测试的可变标签；需要固定测试输入时，应从发布摘要取得 digest 并使用 `ghcr.io/elykia093/lx-sync@sha256:<digest>`。手动触发仍只执行源码、PostgreSQL 和构建验证，不发布镜像。
 - 推送 `main` 会发布 `edge` 和 `sha-<完整提交 SHA>` 标签；`edge` 仅用于跟踪主干，不应作为生产部署标识。
-- 推送 `v*.*.*` tag 时，tag 必须精确等于 `v${package.json.version}`，根 package 与 server package 版本必须一致，且目标 commit 必须可从 `origin/main` 到达；通过后发布完整语义版本、`major.minor` 和 SHA 标签。
-- PostgreSQL 18.4-alpine service 以 OCI digest 固定，并作为唯一数据库测试基线。工作流显式禁用 `latest`，先只推送 `candidate-<提交 SHA>`，用 `imagetools inspect` 确认 manifest 同时包含 amd64 与 arm64，并为该 digest 发布 SBOM 和 GitHub provenance attestation；全部成功后才提升 edge/semver/SHA 正式标签并逐一确认仍指向同一 digest。
-- 发布摘要会记录不可变 digest。生产部署与回滚必须使用 `ghcr.io/elykia093/lx-sync@sha256:<digest>`，不能只依赖可变标签。仓库内 `compose.yaml` 的 `lx-sync:0.1.0` 是本地源码构建标签，不代表已发布的 GHCR 制品。
+- 推送 `v*.*.*` tag 时，tag 必须精确等于 `v${package.json.version}`，根 package、server package 与 web package 版本必须一致，且目标 commit 必须可从 `origin/main` 到达；通过后发布完整语义版本、`major.minor` 和 SHA 标签。
+- PostgreSQL 18-alpine service 以 OCI digest 固定，并作为唯一数据库测试基线。工作流显式禁用 `latest`，先只推送 `candidate-<提交 SHA>`，用 `imagetools inspect` 确认 manifest 同时包含 amd64 与 arm64，并为该 digest 发布 SBOM 和 GitHub provenance attestation；全部成功后才提升 edge/semver/SHA 正式标签并逐一确认仍指向同一 digest。
+- 发布摘要会记录不可变 digest。生产部署与回滚必须使用 `ghcr.io/elykia093/lx-sync@sha256:<digest>`，不能只依赖可变标签。仓库内 `compose.yaml` 的 `lx-sync:local` 是本地源码构建标签，不代表已发布的 GHCR 制品。
 
 GitHub ruleset、tag 保护、required checks、GHCR 可见性和保留策略属于仓库外配置，工作流无法自行证明它们已启用。首次发布前应至少将上述 CI check 设为合并门禁，限制 release tag 的创建权限，并确认 GHCR 不会清理仍用于回滚的 digest。回滚应用时切换到上一条已验证 digest；数据库迁移仍按前述兼容性判断决定回滚或 roll-forward。
 

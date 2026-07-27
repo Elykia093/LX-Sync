@@ -6,14 +6,14 @@
 
 LX-Sync 是面向 LX Music 的自托管同步服务，兼容 LX Music v4 的 HTTP 握手和 WebSocket 同步流程。它保存歌单与“不喜欢”规则，提供多设备合并、有限历史快照、设备撤销、快照恢复、审计记录和同源 React 管理端。
 
-- 当前项目版本：`0.1.3`。
+- 当前项目版本：`0.2.0`。
 - 当前阶段：SemVer `0.x.y` 初始开发阶段，README 标记为 Alpha。
 - 部署模型：单实例模块化单体。
 - 持久化事实源：PostgreSQL。
 - 管理端：同源 React SPA，不是公开或跨域管理 API。
 - 明确不在当前范围：Redis、多实例广播、消息队列、分布式锁、SSO/RBAC、SSR、移动端应用和 Kubernetes Chart。
 
-当前 `0.1.3` 是合法 SemVer，不因新增规范而删除、重置或自动提升。
+当前 `0.2.0` 是合法 SemVer，不因新增规范而删除、重置或自动提升。
 
 ## 2. 文档分工与证据优先级
 
@@ -33,7 +33,7 @@ LX-Sync 是面向 LX Music 的自托管同步服务，兼容 LX Music v4 的 HTT
 | HTTP | Fastify 5.10.0、`@fastify/cookie`、`@fastify/static` |
 | WebSocket/RPC | `ws` 8.21.1、`message2call` 0.1.3 |
 | 数据校验 | Zod 4.4.3 |
-| 数据库 | PostgreSQL 18.4、Kysely 0.29.4、`pg` 8.22.0 |
+| 数据库 | PostgreSQL 18、Kysely 0.29.4、`pg` 8.22.0 |
 | 前端 | React 19.2.7、React Router 7.18.1、TanStack Query 5.101.2、Vite 8.1.5 |
 | 质量 | Biome 2.5.4、Vitest 4.1.10、Playwright 1.61.1 |
 | 容器 | 多阶段 Docker build、Compose、GHCR 多平台镜像 |
@@ -90,7 +90,7 @@ LX-Sync 是面向 LX Music 的自托管同步服务，兼容 LX Music v4 的 HTT
 
 Dockerfile 先冻结安装 workspace 依赖，构建 server 和 web，再把 server 生产依赖、`dist` 和 web `dist` 复制到只含 Node runtime 的镜像。容器以非 root `node` 用户执行 `node server/dist/index.js`。
 
-Compose 固定 PostgreSQL 18.4-alpine OCI digest，等待数据库健康后启动单个 app 容器。app 使用只读根文件系统、`/tmp` tmpfs、丢弃全部 Linux capabilities，并通过 `/health/ready` 检查数据库可用性。
+Compose 固定 PostgreSQL 18-alpine OCI digest，等待数据库健康后启动单个 app 容器。app 使用只读根文件系统、`/tmp` tmpfs、丢弃全部 Linux capabilities，并通过 `/health/ready` 检查数据库可用性。
 
 ## 6. HTTP 与管理 API
 
@@ -102,7 +102,7 @@ Compose 固定 PostgreSQL 18.4-alpine OCI digest，等待数据库健康后启�
 
 ### 6.2 管理 API v1
 
-管理 API 固定前缀 `/api/v1`，仅供同源 SPA 使用。主要资源包括 session、status、users、devices、snapshots 和 audit events。详细字段与错误码见 `docs/api.md`。
+管理 API 固定前缀 `/api/v1`，仅供同源 SPA 使用。主要资源包括 session、status、users、devices、playlists、snapshots 和 audit events。歌单管理复用 LX `ListAction` 和不可变快照模型：所有写请求携带 `expectedSnapshotId`，在用户级串行任务内执行 PostgreSQL head 行锁/CAS、快照与审计同事务写入，并向已就绪的在线 list 连接广播；客户端确认后才推进对应设备 baseline。详细字段与错误码见 `docs/api.md`。
 
 所有非 GET/HEAD/OPTIONS 管理请求必须携带与 `PUBLIC_ORIGIN` 完全相同的 `Origin`。请求对象使用 strict Zod schema，未知字段被拒绝。API 返回 `Cache-Control: no-store`，错误统一为 `application/problem+json`，客户端按 `status` 和 `code` 分支。
 

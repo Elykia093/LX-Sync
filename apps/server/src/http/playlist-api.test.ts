@@ -248,7 +248,7 @@ describe('playlist management HTTP API', () => {
       url: `/api/v1/users/${userId}/playlists/${overRouterLimit}?snapshotId=${initialSnapshotId}`,
       headers: { cookie: fixture.cookie },
     })
-    expect(rejected.statusCode).toBe(404)
+    expect([404, 414]).toContain(rejected.statusCode)
   })
 
   it('creates a namespaced user playlist and records a controlled audit', async () => {

@@ -38,6 +38,8 @@ describe('HTTP access log redaction', () => {
         count: () => 0,
         closeUser: async () => {},
         closeDevice: async () => {},
+        forUser: () => [],
+        runExclusive: (_userId, task) => task(),
       },
       serverId: 'server-id',
       startedAt: new Date('2026-01-01T00:00:00.000Z'),

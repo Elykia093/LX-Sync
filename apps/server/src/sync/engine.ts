@@ -10,6 +10,7 @@ import {
   LX_SYNC,
   type SyncDomain,
 } from '../protocol/index.js'
+import { broadcastListAction } from './broadcast.js'
 import {
   deviceLogReference,
   type SyncLogger,
@@ -409,9 +410,15 @@ export class SyncEngine {
     action: ListAction,
     snapshot: SnapshotRecord,
   ): Promise<void> {
-    await this.broadcast(connection, 'list', snapshot, async (client) =>
-      client.remoteList.onListSyncAction(action),
-    )
+    await broadcastListAction({
+      repository: this.repository,
+      hub: this.hub,
+      userId: connection.user.id,
+      action,
+      snapshot,
+      sourceDeviceId: connection.device.clientId,
+      ...(this.logger ? { logger: this.logger } : {}),
+    })
   }
 
   private async broadcastDislike(

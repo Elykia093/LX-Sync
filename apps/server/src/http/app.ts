@@ -6,9 +6,13 @@ import fastifyStatic from '@fastify/static'
 import Fastify, { type FastifyReply, type FastifyRequest } from 'fastify'
 import { ZodError, z } from 'zod'
 import type { AppConfig } from '../config.js'
-import type { Repository } from '../db/repository.js'
+import {
+  type Repository,
+  SnapshotConflictError,
+  type SnapshotRecord,
+} from '../db/repository.js'
 import { AppError } from '../errors.js'
-import { LX_SYNC } from '../protocol/index.js'
+import { type ListData, LX_SYNC } from '../protocol/index.js'
 import {
   deriveConnectionKey,
   randomSessionId,
@@ -18,7 +22,10 @@ import {
 import type { LxAuthService } from '../sync/auth.js'
 import { AttemptLimiter } from '../sync/auth.js'
 import type { ConnectionRegistry } from '../sync/gateway.js'
+import type { SyncLogger } from '../sync/logging.js'
 import { syncPathForUser } from '../sync/path.js'
+import { PlaylistManagementService } from './playlist-management.js'
+import { playlistDetailResponse, playlistSummaryResponse } from './playlists.js'
 
 export const sessionCookieName = 'lx_sync_session'
 
@@ -44,11 +51,19 @@ export interface AppDependencies {
     | 'listDevices'
     | 'revokeDevice'
     | 'listSnapshots'
+    | 'getSnapshot'
+    | 'markDeviceSnapshot'
+    | 'saveSnapshot'
     | 'restoreSnapshot'
     | 'listAudit'
-  >
+  > & {
+    getHead(domain: 'list', userId: string): Promise<SnapshotRecord<ListData>>
+  }
   auth: Pick<LxAuthService, 'authenticateHttp'>
-  registry: Pick<ConnectionRegistry, 'count' | 'closeUser' | 'closeDevice'>
+  registry: Pick<
+    ConnectionRegistry,
+    'count' | 'closeUser' | 'closeDevice' | 'forUser' | 'runExclusive'
+  >
   serverId: string
   startedAt: Date
   loggerStream?: { write(message: string): void }
@@ -109,18 +124,74 @@ const snapshotListParamsSchema = userParamsSchema
 const snapshotQuerySchema = z
   .object({ limit: z.coerce.number().int().min(1).max(100).default(50) })
   .strict()
+const playlistParamsSchema = userParamsSchema
+  .extend({ playlistId: z.string().min(1).max(2048) })
+  .strict()
+const playlistQuerySchema = z
+  .object({
+    snapshotId: z.string().uuid(),
+    q: z.string().max(256).default(''),
+    offset: z.coerce.number().int().min(0).max(10_000).default(0),
+    limit: z.coerce.number().int().min(1).max(100).default(50),
+  })
+  .strict()
+const playlistNameMutationSchema = z
+  .object({
+    name: z.string().trim().min(1).max(64),
+    expectedSnapshotId: z.string().uuid(),
+  })
+  .strict()
+const playlistSnapshotMutationSchema = z
+  .object({ expectedSnapshotId: z.string().uuid() })
+  .strict()
+const playlistSongIdSchema = z.union([
+  z.string().min(1).max(1024),
+  z.number().finite(),
+])
+const playlistSongIdsSchema = z
+  .array(playlistSongIdSchema)
+  .min(1)
+  .max(10_000)
+  .superRefine((songIds, context) => {
+    const seen = new Set<string>()
+    for (const songId of songIds) {
+      const key = `${typeof songId}:${String(songId)}`
+      if (seen.has(key)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'songIds must contain unique values',
+        })
+        return
+      }
+      seen.add(key)
+    }
+  })
+const playlistSongsMutationSchema = z
+  .object({
+    songIds: playlistSongIdsSchema,
+    expectedSnapshotId: z.string().uuid(),
+  })
+  .strict()
+const playlistSongTransferSchema = playlistSongsMutationSchema
+  .extend({ targetPlaylistId: z.string().min(1).max(2048) })
+  .strict()
 const auditQuerySchema = z
   .object({ limit: z.coerce.number().int().min(1).max(200).default(100) })
   .strict()
 
 export async function buildApp(dependencies: AppDependencies) {
   const { config, repository } = dependencies
+  const playlistManagement = new PlaylistManagementService(
+    repository,
+    dependencies.registry,
+  )
   const sessions = new WeakMap<FastifyRequest, SessionContext>()
   const loginLimiter = new AttemptLimiter()
   const app = Fastify({
     bodyLimit: 1024 * 1024,
     connectionTimeout: 10_000,
     requestTimeout: 30_000,
+    routerOptions: { maxParamLength: 2048 },
     trustProxy: config.TRUST_PROXY ? 1 : false,
     logger:
       config.NODE_ENV === 'test' || config.LOG_LEVEL === 'silent'
@@ -162,7 +233,7 @@ export async function buildApp(dependencies: AppDependencies) {
     reply.header('X-Frame-Options', 'DENY')
     reply.header(
       'Content-Security-Policy',
-      "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self'",
+      "default-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self'",
     )
     if (config.NODE_ENV === 'production')
       reply.header(
@@ -207,6 +278,17 @@ export async function buildApp(dependencies: AppDependencies) {
         'VALIDATION_FAILED',
         'Invalid request',
         'Request validation failed',
+      )
+      return
+    }
+    if (error instanceof SnapshotConflictError) {
+      sendProblem(
+        reply,
+        request,
+        409,
+        'SNAPSHOT_CONFLICT',
+        'Conflict',
+        'Snapshot head changed; refresh and retry',
       )
       return
     }
@@ -504,6 +586,161 @@ export async function buildApp(dependencies: AppDependencies) {
           },
         )
 
+        protectedApi.get('/users/:userId/playlists', async (request) => {
+          const { userId } = userParamsSchema.parse(request.params)
+          await requireUser(repository, userId)
+          return playlistSummaryResponse(
+            await repository.getHead('list', userId),
+          )
+        })
+
+        protectedApi.get(
+          '/users/:userId/playlists/:playlistId',
+          async (request) => {
+            const { userId, playlistId } = playlistParamsSchema.parse(
+              request.params,
+            )
+            const query = playlistQuerySchema.parse(request.query)
+            await requireUser(repository, userId)
+            const snapshot = await repository.getSnapshot(
+              userId,
+              'list',
+              query.snapshotId,
+            )
+            if (!snapshot)
+              throw new AppError(
+                404,
+                'SNAPSHOT_NOT_FOUND',
+                'Snapshot was not found',
+              )
+            const response = playlistDetailResponse(snapshot, playlistId, query)
+            if (!response)
+              throw new AppError(
+                404,
+                'PLAYLIST_NOT_FOUND',
+                'Playlist was not found',
+              )
+            return response
+          },
+        )
+
+        protectedApi.post(
+          '/users/:userId/playlists',
+          async (request, reply) => {
+            const session = sessionFor(sessions, request)
+            const { userId } = userParamsSchema.parse(request.params)
+            const body = playlistNameMutationSchema.parse(request.body)
+            const result = await playlistManagement.create({
+              userId,
+              actor: session.username,
+              name: body.name,
+              expectedSnapshotId: body.expectedSnapshotId,
+              logger: requestSyncLogger(request),
+            })
+            reply.header(
+              'Location',
+              `/api/v1/users/${userId}/playlists/${encodeURIComponent(result.playlist.id)}`,
+            )
+            return reply.status(201).send(result)
+          },
+        )
+
+        protectedApi.patch(
+          '/users/:userId/playlists/:playlistId',
+          async (request) => {
+            const session = sessionFor(sessions, request)
+            const { userId, playlistId } = playlistParamsSchema.parse(
+              request.params,
+            )
+            const body = playlistNameMutationSchema.parse(request.body)
+            return playlistManagement.rename({
+              userId,
+              actor: session.username,
+              playlistId,
+              name: body.name,
+              expectedSnapshotId: body.expectedSnapshotId,
+              logger: requestSyncLogger(request),
+            })
+          },
+        )
+
+        protectedApi.delete(
+          '/users/:userId/playlists/:playlistId',
+          async (request) => {
+            const session = sessionFor(sessions, request)
+            const { userId, playlistId } = playlistParamsSchema.parse(
+              request.params,
+            )
+            const body = playlistSnapshotMutationSchema.parse(request.body)
+            return playlistManagement.delete({
+              userId,
+              actor: session.username,
+              playlistId,
+              expectedSnapshotId: body.expectedSnapshotId,
+              logger: requestSyncLogger(request),
+            })
+          },
+        )
+
+        protectedApi.delete(
+          '/users/:userId/playlists/:playlistId/songs',
+          async (request) => {
+            const session = sessionFor(sessions, request)
+            const { userId, playlistId } = playlistParamsSchema.parse(
+              request.params,
+            )
+            const body = playlistSongsMutationSchema.parse(request.body)
+            return playlistManagement.removeSongs({
+              userId,
+              actor: session.username,
+              playlistId,
+              songIds: body.songIds,
+              expectedSnapshotId: body.expectedSnapshotId,
+              logger: requestSyncLogger(request),
+            })
+          },
+        )
+
+        protectedApi.post(
+          '/users/:userId/playlists/:playlistId/song-moves',
+          async (request) => {
+            const session = sessionFor(sessions, request)
+            const { userId, playlistId } = playlistParamsSchema.parse(
+              request.params,
+            )
+            const body = playlistSongTransferSchema.parse(request.body)
+            return playlistManagement.moveSongs({
+              userId,
+              actor: session.username,
+              playlistId,
+              targetPlaylistId: body.targetPlaylistId,
+              songIds: body.songIds,
+              expectedSnapshotId: body.expectedSnapshotId,
+              logger: requestSyncLogger(request),
+            })
+          },
+        )
+
+        protectedApi.post(
+          '/users/:userId/playlists/:playlistId/song-copies',
+          async (request) => {
+            const session = sessionFor(sessions, request)
+            const { userId, playlistId } = playlistParamsSchema.parse(
+              request.params,
+            )
+            const body = playlistSongTransferSchema.parse(request.body)
+            return playlistManagement.copySongs({
+              userId,
+              actor: session.username,
+              playlistId,
+              targetPlaylistId: body.targetPlaylistId,
+              songIds: body.songIds,
+              expectedSnapshotId: body.expectedSnapshotId,
+              logger: requestSyncLogger(request),
+            })
+          },
+        )
+
         protectedApi.get(
           '/users/:userId/sync-domains/:domain/snapshots',
           async (request) => {
@@ -514,6 +751,47 @@ export async function buildApp(dependencies: AppDependencies) {
             await requireUser(repository, userId)
             return {
               data: await repository.listSnapshots(userId, domain, limit),
+            }
+          },
+        )
+
+        protectedApi.get(
+          '/users/:userId/sync-domains/:domain/snapshots/:snapshotId/export',
+          async (request, reply) => {
+            const { userId, domain, snapshotId } = snapshotParamsSchema.parse(
+              request.params,
+            )
+            await requireUser(repository, userId)
+            const snapshot = await repository.getSnapshot(
+              userId,
+              domain,
+              snapshotId,
+            )
+            if (!snapshot)
+              throw new AppError(
+                404,
+                'SNAPSHOT_NOT_FOUND',
+                'Snapshot was not found',
+              )
+            reply
+              .type('application/json; charset=utf-8')
+              .header(
+                'Content-Disposition',
+                `attachment; filename="lx-sync-${domain}-${snapshot.id}.json"`,
+              )
+            return {
+              format: 'lx-sync.snapshot',
+              version: 1,
+              userId,
+              domain,
+              snapshot: {
+                id: snapshot.id,
+                hash: snapshot.hash,
+                itemCount: snapshot.itemCount,
+                byteSize: snapshot.byteSize,
+                createdAt: snapshot.createdAt,
+                data: snapshot.data,
+              },
             }
           },
         )
@@ -597,6 +875,14 @@ function sessionFor(
   const session = sessions.get(request)
   if (!session) throw new AppError(401, 'AUTH_INVALID', 'Authentication failed')
   return session
+}
+
+function requestSyncLogger(request: FastifyRequest): SyncLogger {
+  return {
+    debug: (bindings, message) => request.log.debug(bindings, message),
+    info: (bindings, message) => request.log.info(bindings, message),
+    warn: (bindings, message) => request.log.warn(bindings, message),
+  }
 }
 
 function withSyncPath<T extends { id: string }>(user: T, config: AppConfig) {

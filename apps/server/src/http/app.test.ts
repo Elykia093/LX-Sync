@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AppConfig } from '../config.js'
+import type { SnapshotRecord } from '../db/repository.js'
+import type { ListData } from '../protocol/index.js'
 import { type AppDependencies, buildApp, sessionCookieName } from './app.js'
 
 const config = {
@@ -44,6 +46,21 @@ describe('management authentication contract', () => {
     const closeUserStarted = Promise.withResolvers<void>()
     const closeUserFinished = Promise.withResolvers<void>()
     const protocolAuthUsers: Array<string | null> = []
+    const listHead: SnapshotRecord<ListData> = {
+      id: '00000000-0000-4000-8000-000000000003',
+      hash: 'list-head-hash',
+      itemCount: 2,
+      byteSize: 128,
+      createdAt: new Date('2026-01-02T00:00:00.000Z'),
+      data: {
+        defaultList: [
+          { id: 'song-1', name: 'First Song', singer: 'Singer A' },
+          { id: 'song-2', name: 'Second Song', singer: 'Singer B' },
+        ],
+        loveList: [],
+        userList: [],
+      },
+    }
 
     const repository: AppDependencies['repository'] = {
       checkDatabase: async () => {},
@@ -114,7 +131,19 @@ describe('management authentication contract', () => {
       },
       listDevices: async () => [],
       revokeDevice: async () => false,
+      getHead: async () => listHead,
+      saveSnapshot: (async () =>
+        listHead) as unknown as AppDependencies['repository']['saveSnapshot'],
+      markDeviceSnapshot: async () => {},
       listSnapshots: async () => [],
+      getSnapshot: (async (
+        _userId: string,
+        domain: string,
+        snapshotId: string,
+      ) =>
+        domain === 'list' && snapshotId === listHead.id
+          ? listHead
+          : null) as unknown as AppDependencies['repository']['getSnapshot'],
       restoreSnapshot: async () => false,
       listAudit: async () => [],
     }
@@ -138,6 +167,8 @@ describe('management authentication contract', () => {
           await closeUserFinished.promise
         },
         closeDevice: async () => {},
+        forUser: () => [],
+        runExclusive: (_userId, task) => task(),
       },
       serverId: 'server-id',
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -273,6 +304,49 @@ describe('management authentication contract', () => {
     expect(users.json().data[0]).toMatchObject({
       syncPath: `/base/${disabledUserId}`,
     })
+
+    const playlists = await app.inject({
+      method: 'GET',
+      url: `/api/v1/users/${disabledUserId}/playlists`,
+      headers: { cookie },
+    })
+    expect(playlists.statusCode).toBe(200)
+    expect(playlists.json()).toMatchObject({
+      snapshotId: listHead.id,
+      data: [
+        { id: 'default', songCount: 2 },
+        { id: 'love', songCount: 0 },
+      ],
+    })
+
+    const playlistSongs = await app.inject({
+      method: 'GET',
+      url: `/api/v1/users/${disabledUserId}/playlists/default?snapshotId=${listHead.id}&q=second&offset=0&limit=1`,
+      headers: { cookie },
+    })
+    expect(playlistSongs.statusCode).toBe(200)
+    expect(playlistSongs.json()).toMatchObject({
+      playlist: { id: 'default', songCount: 2 },
+      offset: 0,
+      limit: 1,
+      total: 1,
+      data: [{ id: 'song-2', position: 2, name: 'Second Song' }],
+    })
+
+    const missingPlaylist = await app.inject({
+      method: 'GET',
+      url: `/api/v1/users/${disabledUserId}/playlists/missing?snapshotId=${listHead.id}`,
+      headers: { cookie },
+    })
+    expect(missingPlaylist.statusCode).toBe(404)
+    expect(missingPlaylist.json().code).toBe('PLAYLIST_NOT_FOUND')
+
+    const invalidPlaylistOffset = await app.inject({
+      method: 'GET',
+      url: `/api/v1/users/${disabledUserId}/playlists/default?snapshotId=${listHead.id}&offset=10001`,
+      headers: { cookie },
+    })
+    expect(invalidPlaylistOffset.statusCode).toBe(400)
 
     const acceptedConnectionCodes = ['密', ' ', `! ${'x'.repeat(257)} 🙂`]
     for (const [index, connectionCode] of acceptedConnectionCodes.entries()) {

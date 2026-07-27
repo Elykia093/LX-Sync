@@ -38,7 +38,10 @@ test('管理员可从失败登录恢复并完成用户管理与审计旅程', as
 
     expect((await loginResponse).status()).toBe(200)
     await expect(
-      page.getByRole('heading', { name: new RegExp(adminUsername) }),
+      page.getByRole('heading', { name: '仪表盘', exact: true }),
+    ).toBeVisible()
+    await expect(
+      page.getByRole('img', { name: `当前管理员：${adminUsername}` }),
     ).toBeVisible()
 
     await page.getByLabel('用户名称').fill(userName)

@@ -406,6 +406,49 @@ describeWithDatabase.sequential('LX v4 protocol with PostgreSQL', () => {
       .execute()
     expect(baselines).toEqual([])
   }, 30_000)
+
+  it('rolls back the snapshot and head when audit insertion fails', async () => {
+    const user = await repository.createUser({
+      name: 'audit-rollback-user',
+      authKey: fixtureDeriveConnectionKey('audit-rollback-code'),
+      maxSnapshots: 10,
+      addMusicLocationType: 'bottom',
+    })
+    const initialHead = await repository.getHead('list', user.id)
+
+    await expect(
+      repository.saveSnapshot({
+        userId: user.id,
+        domain: 'list',
+        data: listWithTrack('must-roll-back-with-audit'),
+        expectedSnapshotId: initialHead.id,
+        audit: {
+          actor: 'integration-test',
+          action: 'playlist.create',
+          targetType: 'sync_user',
+          targetId: user.id,
+          metadata: { unsupportedJsonValue: 1n },
+        },
+      }),
+    ).rejects.toThrow()
+
+    const head = await repository.getHead('list', user.id)
+    expect(head.id).toBe(initialHead.id)
+    const snapshots = await database
+      .selectFrom('syncSnapshots')
+      .select('id')
+      .where('userId', '=', user.id)
+      .where('domain', '=', 'list')
+      .execute()
+    expect(snapshots).toEqual([{ id: initialHead.id }])
+    const audits = await database
+      .selectFrom('auditEvents')
+      .select('id')
+      .where('targetId', '=', user.id)
+      .where('action', '=', 'playlist.create')
+      .execute()
+    expect(audits).toEqual([])
+  }, 30_000)
 })
 
 function resolveTestDatabaseUrl(environment: {

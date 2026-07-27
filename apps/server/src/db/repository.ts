@@ -500,6 +500,7 @@ export class Repository {
     data: ListData
     sourceDeviceId?: string
     expectedSnapshotId?: string
+    audit?: AuditEventInput
   }): Promise<SnapshotRecord<ListData>>
   async saveSnapshot(input: {
     userId: string
@@ -507,6 +508,7 @@ export class Repository {
     data: DislikeRules
     sourceDeviceId?: string
     expectedSnapshotId?: string
+    audit?: AuditEventInput
   }): Promise<SnapshotRecord<DislikeRules>>
   async saveSnapshot(input: {
     userId: string
@@ -514,6 +516,7 @@ export class Repository {
     data: ListData | DislikeRules
     sourceDeviceId?: string
     expectedSnapshotId?: string
+    audit?: AuditEventInput
   }): Promise<SnapshotRecord> {
     let snapshot: SerializedSnapshot
     if (input.domain === 'list') {
@@ -585,6 +588,7 @@ export class Repository {
           input.domain,
           stored.id,
         )
+      if (input.audit) await this.insertAudit(transaction, input.audit)
       const user = await transaction
         .selectFrom('syncUsers')
         .select('maxSnapshots')
@@ -663,6 +667,36 @@ export class Repository {
       .orderBy('id', 'desc')
       .limit(Math.min(Math.max(limit, 1), 100))
       .execute()
+  }
+
+  async getSnapshot(
+    userId: string,
+    domain: 'list',
+    snapshotId: string,
+  ): Promise<SnapshotRecord<ListData> | null>
+  async getSnapshot(
+    userId: string,
+    domain: 'dislike',
+    snapshotId: string,
+  ): Promise<SnapshotRecord<DislikeRules> | null>
+  async getSnapshot(
+    userId: string,
+    domain: SyncDomain,
+    snapshotId: string,
+  ): Promise<SnapshotRecord | null>
+  async getSnapshot(
+    userId: string,
+    domain: SyncDomain,
+    snapshotId: string,
+  ): Promise<SnapshotRecord | null> {
+    const row = await this.db
+      .selectFrom('syncSnapshots')
+      .select(['id', 'hash', 'payload', 'createdAt', 'itemCount', 'byteSize'])
+      .where('id', '=', snapshotId)
+      .where('userId', '=', userId)
+      .where('domain', '=', domain)
+      .executeTakeFirst()
+    return row ? this.mapSnapshot(domain, row) : null
   }
 
   async restoreSnapshot(

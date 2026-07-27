@@ -233,7 +233,7 @@ export async function buildApp(dependencies: AppDependencies) {
     reply.header('X-Frame-Options', 'DENY')
     reply.header(
       'Content-Security-Policy',
-      "default-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self'",
+      "default-src 'self'; script-src 'self'; base-uri 'none'; frame-ancestors 'none'; object-src 'none'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self'",
     )
     if (config.NODE_ENV === 'production')
       reply.header(

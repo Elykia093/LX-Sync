@@ -100,8 +100,10 @@ describeWithDatabase.sequential('LX v4 protocol with PostgreSQL', () => {
   if (!testDatabaseUrl) return
 
   const schemaName = `lx_sync_test_${randomBytes(8).toString('hex')}`
+  const decoySchemaName = `${schemaName}_decoy`
   const masterKey = randomBytes(32).toString('base64')
   const connectionCode = 'integration-connection-code'
+  const publicOrigin = 'http://127.0.0.1'
   const clients: ProtocolClient[] = []
   let database: ReturnType<typeof createDatabase>
   let repository: Repository
@@ -114,13 +116,24 @@ describeWithDatabase.sequential('LX v4 protocol with PostgreSQL', () => {
     const administrator = createDatabase(testDatabaseUrl)
     try {
       await sql.raw(`create schema "${schemaName}"`).execute(administrator)
+      await sql.raw(`create schema "${decoySchemaName}"`).execute(administrator)
+      await sql
+        .raw(
+          `create table "${decoySchemaName}"."kysely_migration" (name varchar(255) primary key, timestamp varchar(255) not null)`,
+        )
+        .execute(administrator)
+      await sql
+        .raw(
+          `create table "${decoySchemaName}"."kysely_migration_lock" (id varchar(255) primary key, is_locked integer not null default 0)`,
+        )
+        .execute(administrator)
     } finally {
       await administrator.destroy()
     }
 
     const isolatedUrl = databaseUrlForSchema(testDatabaseUrl, schemaName)
     database = createDatabase(isolatedUrl)
-    await migrateToLatest(database)
+    await migrateToLatest(database, { migrationTableSchema: schemaName })
     repository = new Repository(database, masterKey)
     const serverId = await repository.ensureServiceMetadata()
     const user = await repository.createUser({
@@ -143,7 +156,7 @@ describeWithDatabase.sequential('LX v4 protocol with PostgreSQL', () => {
       SESSION_TTL_HOURS: 24,
       MAX_SNAPSHOTS: 10,
       TRUST_PROXY: false,
-      PUBLIC_ORIGIN: 'http://127.0.0.1',
+      PUBLIC_ORIGIN: publicOrigin,
       SYNC_BASE_PATH: '/base',
       LOG_LEVEL: 'silent',
     } satisfies AppConfig
@@ -183,6 +196,9 @@ describeWithDatabase.sequential('LX v4 protocol with PostgreSQL', () => {
     try {
       await sql
         .raw(`drop schema if exists "${schemaName}" cascade`)
+        .execute(administrator)
+      await sql
+        .raw(`drop schema if exists "${decoySchemaName}" cascade`)
         .execute(administrator)
     } finally {
       await administrator.destroy()
@@ -369,6 +385,118 @@ describeWithDatabase.sequential('LX v4 protocol with PostgreSQL', () => {
     } finally {
       await competingDatabase.destroy()
     }
+  }, 30_000)
+
+  it('persists managed song additions with audit and online delivery', async () => {
+    const currentListHead = await repository.getHead('list', userId)
+    const currentDislikeHead = await repository.getHead('dislike', userId)
+    const client = await connectClient({
+      origin,
+      connectionCode,
+      deviceName: 'Managed Playlist Integration',
+      list: currentListHead.data,
+      dislike: currentDislikeHead.data,
+    })
+    clients.push(client)
+    await client.initialized
+    client.state.receivedListActions.length = 0
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: { origin: publicOrigin },
+      payload: {
+        username: 'admin',
+        password: 'integration-admin-password',
+      },
+    })
+    expect(login.statusCode).toBe(200)
+    const setCookie = login.headers['set-cookie']
+    if (typeof setCookie !== 'string')
+      throw new Error('Integration login did not return a session cookie')
+    const headers = {
+      origin: publicOrigin,
+      cookie: setCookie.split(';')[0] ?? '',
+    }
+    const managedUserId = userId.toUpperCase()
+
+    const beforeCreate = await repository.getHead('list', userId)
+    const createPlaylist = await app.inject({
+      method: 'POST',
+      url: `/api/v1/users/${managedUserId}/playlists`,
+      headers,
+      payload: {
+        name: 'Managed additions',
+        expectedSnapshotId: beforeCreate.id,
+      },
+    })
+    expect(createPlaylist.statusCode).toBe(201)
+    const createdBody = createPlaylist.json<{
+      snapshotId: string
+      playlist: { id: string }
+    }>()
+
+    const addSong = await app.inject({
+      method: 'POST',
+      url: `/api/v1/users/${managedUserId}/playlists/${encodeURIComponent(createdBody.playlist.id)}/songs`,
+      headers,
+      payload: {
+        id: 186016,
+        source: 'wy',
+        name: 'Integration song',
+        singer: 'Integration singer',
+        albumName: 'Integration album',
+        interval: '03:45',
+        expectedSnapshotId: createdBody.snapshotId,
+      },
+    })
+    expect(addSong.statusCode).toBe(201)
+    const addBody = addSong.json<{
+      snapshotId: string
+      affectedSongCount: number
+    }>()
+    expect(addBody.affectedSongCount).toBe(1)
+
+    const persistedHead = await repository.getHead('list', userId)
+    expect(persistedHead.id).toBe(addBody.snapshotId)
+    expect(
+      persistedHead.data.userList.find(
+        (playlist) => `user:${playlist.id}` === createdBody.playlist.id,
+      )?.list,
+    ).toEqual([
+      expect.objectContaining({
+        id: 186016,
+        source: 'wy',
+        meta: expect.objectContaining({ songId: 186016 }),
+      }),
+    ])
+    expect(client.state.receivedListActions).toEqual([
+      expect.objectContaining({ action: 'list_create' }),
+      expect.objectContaining({
+        action: 'list_music_add',
+        data: expect.objectContaining({
+          musicInfos: [expect.objectContaining({ id: 186016 })],
+        }),
+      }),
+    ])
+    const deliveredBaseline = await repository.getDeviceSnapshot(
+      'list',
+      userId,
+      client.device.clientId,
+    )
+    expect(deliveredBaseline?.id).toBe(persistedHead.id)
+
+    const audits = await repository.listAudit(200)
+    const additionAudit = audits.find(
+      (event) => event.action === 'playlist.songs.add',
+    )
+    expect(additionAudit?.metadata).toEqual({
+      domain: 'list',
+      affectedPlaylistCount: 1,
+      affectedSongCount: 1,
+    })
+    expect(JSON.stringify(additionAudit)).not.toContain('Integration song')
+    expect(JSON.stringify(additionAudit)).not.toContain('186016')
   }, 30_000)
 
   it('rolls back snapshot, head, and baseline when a transactional step fails', async () => {

@@ -122,6 +122,55 @@ describe('playlist management projections', () => {
     ).toBeNull()
   })
 
+  it('combines source, singer, and album filters within one playlist', () => {
+    const filteredHead: SnapshotRecord<ListData> = {
+      ...head,
+      data: {
+        ...head.data,
+        defaultList: [
+          ...head.data.defaultList,
+          {
+            id: 'legacy-song',
+            name: 'Legacy Song',
+            singer: 'Beta Artist',
+            source: 'tx',
+            albumName: 'Top-level Album',
+          },
+        ],
+      },
+    }
+
+    expect(
+      playlistDetailResponse(filteredHead, 'default', {
+        q: 'song',
+        source: 'tx',
+        singer: 'beta',
+        albumName: 'top-level',
+        offset: 0,
+        limit: 10,
+      }),
+    ).toMatchObject({
+      total: 1,
+      data: [
+        {
+          id: 'legacy-song',
+          position: 3,
+          albumName: 'Top-level Album',
+        },
+      ],
+    })
+    expect(
+      playlistDetailResponse(filteredHead, 'default', {
+        q: '',
+        source: 'wy',
+        singer: 'beta',
+        albumName: '',
+        offset: 0,
+        limit: 10,
+      }),
+    ).toMatchObject({ total: 0, data: [] })
+  })
+
   it('rejects snapshots whose user playlist IDs cannot be resolved uniquely', () => {
     const [userPlaylist] = head.data.userList
     if (!userPlaylist) throw new Error('Expected a user playlist fixture')

@@ -14,7 +14,10 @@ import type {
 } from '../protocol/index.js'
 import { syncLimits } from '../sync/snapshot.js'
 import type { ConnectionHub, SyncConnection } from '../sync/types.js'
-import { PlaylistManagementService } from './playlist-management.js'
+import {
+  isValidManagedSongId,
+  PlaylistManagementService,
+} from './playlist-management.js'
 
 const createdAt = new Date('2026-07-23T04:00:00.000Z')
 
@@ -185,6 +188,236 @@ const baseData = (): ListData => ({
 })
 
 describe('PlaylistManagementService', () => {
+  it('accepts platform ID types and rejects every reserved pseudo prefix', () => {
+    expect(isValidManagedSongId('0032')).toBe(true)
+    expect(isValidManagedSongId('MUSIC_123-abc')).toBe(true)
+    expect(isValidManagedSongId(32)).toBe(true)
+    for (const pseudoId of [
+      'unknown',
+      'unknown_track',
+      'local',
+      'local-track',
+      'temp',
+      'temp_123',
+      'undefined',
+      'undefined-track',
+      'null',
+      'null_track',
+      '---',
+    ])
+      expect(isValidManagedSongId(pseudoId)).toBe(false)
+    expect(isValidManagedSongId(0)).toBe(false)
+    expect(isValidManagedSongId(1.5)).toBe(false)
+  })
+
+  it('adds a controlled platform song, preserves its ID type, audits, and broadcasts', async () => {
+    const actions: ListAction[] = []
+    const repository = new MemoryRepository(baseData())
+    const service = new PlaylistManagementService(
+      repository,
+      hub([connection({ actions })]),
+    )
+
+    const result = await service.addSong({
+      userId: 'user-id',
+      actor: 'admin',
+      playlistId: 'user:target',
+      song: {
+        id: '0032',
+        source: 'tx',
+        name: 'Added song',
+        singer: 'Added singer',
+        albumName: 'Added album',
+        interval: '03:21',
+      },
+      expectedSnapshotId: repository.head.id,
+    })
+
+    expect(result.affectedSongCount).toBe(1)
+    expect(repository.head.data.userList[0]?.list).toEqual([
+      {
+        id: '0032',
+        name: 'Added song',
+        singer: 'Added singer',
+        source: 'tx',
+        interval: '03:21',
+        songmid: '0032',
+        albumName: 'Added album',
+        types: [],
+        _types: {},
+        typeUrl: {},
+        meta: {
+          songId: '0032',
+          albumName: 'Added album',
+          qualitys: [],
+          _qualitys: {},
+        },
+      },
+    ])
+    expect(actions).toEqual([
+      expect.objectContaining({
+        action: 'list_music_add',
+        data: expect.objectContaining({
+          id: 'target',
+          musicInfos: [expect.objectContaining({ id: '0032', source: 'tx' })],
+        }),
+      }),
+    ])
+    expect(repository.marks).toEqual([
+      { deviceId: 'ready-device', snapshotId: result.snapshotId },
+    ])
+    expect(repository.audits).toEqual([
+      {
+        actor: 'admin',
+        action: 'playlist.songs.add',
+        targetType: 'sync_user',
+        targetId: 'user-id',
+        metadata: {
+          domain: 'list',
+          affectedPlaylistCount: 1,
+          affectedSongCount: 1,
+        },
+      },
+    ])
+    expect(JSON.stringify(repository.audits)).not.toContain('Added song')
+    expect(JSON.stringify(repository.audits)).not.toContain('0032')
+  })
+
+  it('keeps numeric platform IDs distinct from string IDs when adding songs', async () => {
+    const data = baseData()
+    data.userList[0]?.list.push({ id: '2', source: 'wy' })
+    const repository = new MemoryRepository(data)
+    const service = new PlaylistManagementService(repository, hub([]))
+
+    await service.addSong({
+      userId: 'user-id',
+      actor: 'admin',
+      playlistId: 'user:target',
+      song: {
+        id: 2,
+        source: 'wy',
+        name: 'Numeric platform ID',
+        singer: 'Singer',
+        albumName: '',
+        interval: null,
+      },
+      expectedSnapshotId: repository.head.id,
+    })
+
+    expect(
+      repository.head.data.userList[0]?.list.map((song) => song.id),
+    ).toEqual(['2', 2])
+    expect(repository.head.data.userList[0]?.list[1]?.meta).toMatchObject({
+      songId: 2,
+    })
+  })
+
+  it('rejects invalid, duplicate, built-in, and capacity-exceeding additions', async () => {
+    const repository = new MemoryRepository(baseData())
+    const service = new PlaylistManagementService(repository, hub([]))
+
+    await expect(
+      service.addSong({
+        userId: 'user-id',
+        actor: 'admin',
+        playlistId: 'user:target',
+        song: {
+          id: 'local-track',
+          source: 'wy',
+          name: 'Invalid',
+          singer: 'Singer',
+          albumName: '',
+          interval: null,
+        },
+        expectedSnapshotId: repository.head.id,
+      }),
+    ).rejects.toMatchObject({ statusCode: 400, code: 'VALIDATION_FAILED' })
+
+    await expect(
+      service.addSong({
+        userId: 'user-id',
+        actor: 'admin',
+        playlistId: 'user:target',
+        song: {
+          id: '---',
+          source: 'wy',
+          name: 'Invalid',
+          singer: 'Singer',
+          albumName: '',
+          interval: null,
+        },
+        expectedSnapshotId: repository.head.id,
+      }),
+    ).rejects.toMatchObject({ statusCode: 400, code: 'VALIDATION_FAILED' })
+
+    await expect(
+      service.addSong({
+        userId: 'user-id',
+        actor: 'admin',
+        playlistId: 'default',
+        song: {
+          id: 'valid-id',
+          source: 'wy',
+          name: 'Invalid target',
+          singer: 'Singer',
+          albumName: '',
+          interval: null,
+        },
+        expectedSnapshotId: repository.head.id,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: 'PLAYLIST_IMMUTABLE' })
+
+    repository.head.data.userList[0]?.list.push({
+      id: 'duplicate',
+      source: 'wy',
+    })
+    await expect(
+      service.addSong({
+        userId: 'user-id',
+        actor: 'admin',
+        playlistId: 'user:target',
+        song: {
+          id: 'duplicate',
+          source: 'wy',
+          name: 'Duplicate',
+          singer: 'Singer',
+          albumName: '',
+          interval: null,
+        },
+        expectedSnapshotId: repository.head.id,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: 'SONG_ALREADY_EXISTS' })
+
+    const fullData = baseData()
+    fullData.defaultList = Array.from(
+      { length: syncLimits.maxTracks },
+      (_, index) => ({ id: `song-${index}` }),
+    )
+    const fullRepository = new MemoryRepository(fullData)
+    const fullService = new PlaylistManagementService(fullRepository, hub([]))
+    await expect(
+      fullService.addSong({
+        userId: 'user-id',
+        actor: 'admin',
+        playlistId: 'user:target',
+        song: {
+          id: 'valid-id',
+          source: 'wy',
+          name: 'Over capacity',
+          singer: 'Singer',
+          albumName: '',
+          interval: null,
+        },
+        expectedSnapshotId: fullRepository.head.id,
+      }),
+    ).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'PLAYLIST_CAPACITY_EXCEEDED',
+    })
+    expect(repository.saveCalls).toBe(0)
+    expect(fullRepository.saveCalls).toBe(0)
+  })
+
   it('moves numeric song IDs with full metadata, audits atomically, and broadcasts before advancing baselines', async () => {
     const actions: ListAction[] = []
     const repository = new MemoryRepository(baseData())

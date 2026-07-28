@@ -160,7 +160,7 @@ pnpm --filter @lx-sync/server test:integration
 
 协议 E2E 的测试客户端固定于上述 LX v4 参考提交，自行实现握手常量、AES/MD5 和 `cg_` gzip codec，不导入服务端的协议或安全运行时代码；套件同时覆盖小型 message2call raw frame 与双向压缩帧，避免客户端和服务端同源漂移后仍一起通过。
 
-浏览器 E2E 需要先完成 `pnpm build`，并为服务端提供 `DATABASE_URL`、`MASTER_KEY`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`NODE_ENV=test`、`PUBLIC_ORIGIN=http://127.0.0.1:9527` 等测试环境变量。Playwright 会启动构建后的服务、等待 `/health/ready`，随后验证错误登录、管理员登录、用户创建、设置持久化、审计记录和退出登录；禁止指向生产数据库。覆盖率 HTML 报告位于 `coverage/server` 和 `coverage/web`，浏览器 HTML 报告位于 `playwright-report`，失败时 trace、video 与 screenshot 位于 `test-results`。CI 使用一次性 PostgreSQL 18 服务并上传这些报告。
+浏览器 E2E 需要先完成 `pnpm build`，并为服务端提供 `DATABASE_URL`、`MASTER_KEY`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`NODE_ENV=test`、`PUBLIC_ORIGIN=http://127.0.0.1:9527` 等测试环境变量。Playwright 会启动构建后的服务、等待 `/health/ready`，随后验证错误登录、管理员登录、用户创建、设置持久化、歌单创建与歌曲新增、组合筛选、快照导出、审计记录和退出登录；禁止指向生产数据库。覆盖率 HTML 报告位于 `coverage/server` 和 `coverage/web`，浏览器 HTML 报告位于 `playwright-report`，失败时 trace、video 与 screenshot 位于 `test-results`。CI 使用一次性 PostgreSQL 18 服务并上传这些报告。
 
 ## 环境变量
 
@@ -257,23 +257,26 @@ TRUST_PROXY=true
 
 ## 备份与恢复
 
-备份必须同时覆盖 PostgreSQL 和当前 `MASTER_KEY`。以下命令只演示 Compose 环境；先确认磁盘空间、权限和备份保留策略：
+生产备份与隔离恢复演练按 [docs/backup-and-restore.md](docs/backup-and-restore.md) 执行。备份必须同时覆盖 PostgreSQL 和当前 `MASTER_KEY`，并把两者保存为使用不同凭据和加密仓库的独立恢复对象。
+
+以下命令只生成 Compose 数据库 dump，不是完整备份；它没有保存密钥、上传远端、建立不可变保留或证明能够恢复：
 
 ```powershell
 docker compose exec db pg_dump -U lx_sync -d lx_sync -Fc -f /tmp/lx-sync.dump
 docker compose cp db:/tmp/lx-sync.dump ./lx-sync.dump
 ```
 
-恢复会覆盖目标库对象，属于破坏性操作。应先停止 `app`、在隔离环境演练并核对备份文件，再按维护窗口执行：
+恢复会覆盖目标库对象，属于破坏性操作。应先在名称明确包含 `test` 的隔离数据库演练，核对数据库 dump、对应密钥版本、SHA-256 和应用镜像 digest，再按单独批准的维护窗口执行：
 
 ```powershell
-docker compose stop app
 docker compose cp ./lx-sync.dump db:/tmp/lx-sync.dump
-docker compose exec db pg_restore --clean --if-exists -U lx_sync -d lx_sync /tmp/lx-sync.dump
-docker compose start app
+docker compose exec db createdb -U lx_sync lx_sync_restore_test
+docker compose exec db pg_restore --exit-on-error --no-owner --no-privileges -U lx_sync -d lx_sync_restore_test /tmp/lx-sync.dump
 ```
 
-恢复后至少验证 `/health/ready`、管理员登录、用户/设备数量、两个同步域 head、一次测试设备同步和日志脱敏。当前尚未给出经过演练的 RPO/RTO；生产部署必须自行设定并定期做恢复演练。
+该示例只恢复到隔离测试库，不会切换运行中的应用。验证应用级恢复时，应使用隔离网络和单独配置，使测试实例只连接 `lx_sync_restore_test`；生产恢复命令不在 README 中提供，必须按恢复手册和单独批准的维护窗口生成并复核。
+
+恢复后至少验证 `/health/ready`、管理员登录、用户/设备数量、两个同步域 head、一次测试设备同步、快照导出和日志脱敏。当前起始目标为每天完整备份、`RPO <= 24h`、`RTO <= 2h`；在目标环境完成计时演练前，这些数值仍属于未验证目标。
 
 ## 升级与回滚
 

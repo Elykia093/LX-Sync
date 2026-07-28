@@ -54,6 +54,7 @@ import {
   ApiError,
   api,
   type Device,
+  type ManagedSongSource,
   type PlaylistSong,
   type Session,
   type Snapshot,
@@ -72,6 +73,9 @@ export const queryKeys = {
     playlistId: string,
     snapshotId: string,
     q: string,
+    source: string,
+    singer: string,
+    albumName: string,
     offset: number,
     limit: number,
   ) =>
@@ -81,6 +85,9 @@ export const queryKeys = {
       playlistId,
       snapshotId,
       q,
+      source,
+      singer,
+      albumName,
       offset,
       limit,
     ] as const,
@@ -90,6 +97,34 @@ export const queryKeys = {
 }
 
 const playlistPageSize = 25
+type ManagedSongIdKind = 'string' | 'number'
+const managedSongIdPattern = /^[A-Za-z0-9_-]+$/
+const managedSongIdContentPattern = /[A-Za-z0-9]/
+const pseudoSongIdPattern = /^(?:unknown|local|temp|undefined|null)(?:[_-]|$)/i
+const managedNumericSongIdPattern = /^\d+$/
+const managedIntervalPattern = /^\d{1,3}:[0-5]\d$/
+
+export function managedSongIdFromForm(
+  kind: ManagedSongIdKind,
+  rawValue: string,
+): string | number | null {
+  const value = rawValue.trim()
+  if (kind === 'string')
+    return value.length > 0 &&
+      value.length <= 1024 &&
+      managedSongIdPattern.test(value) &&
+      managedSongIdContentPattern.test(value) &&
+      !pseudoSongIdPattern.test(value)
+      ? value
+      : null
+  const numericValue = Number(value)
+  return value.length > 0 &&
+    managedNumericSongIdPattern.test(value) &&
+    Number.isSafeInteger(numericValue) &&
+    numericValue > 0
+    ? numericValue
+    : null
+}
 
 export async function invalidatePlaylistManagementQueries(
   queryClient: QueryClient,
@@ -974,12 +1009,34 @@ function PlaylistManager({ userId }: { userId: string }) {
   const [renameName, setRenameName] = useState('')
   const [songSearchInput, setSongSearchInput] = useState('')
   const [songQuery, setSongQuery] = useState('')
+  const [songSourceInput, setSongSourceInput] = useState<
+    ManagedSongSource | ''
+  >('')
+  const [songSourceQuery, setSongSourceQuery] = useState<
+    ManagedSongSource | ''
+  >('')
+  const [songSingerInput, setSongSingerInput] = useState('')
+  const [songSingerQuery, setSongSingerQuery] = useState('')
+  const [songAlbumInput, setSongAlbumInput] = useState('')
+  const [songAlbumQuery, setSongAlbumQuery] = useState('')
   const [offset, setOffset] = useState(0)
   const [songSelection, setSongSelection] = useState<{
     scope: string
     ids: PlaylistSong['id'][]
   }>({ scope: '', ids: [] })
   const [selectedTargetPlaylistId, setSelectedTargetPlaylistId] = useState('')
+  const [showAddSong, setShowAddSong] = useState(false)
+  const [addSongSource, setAddSongSource] = useState<ManagedSongSource>('wy')
+  const [addSongIdKind, setAddSongIdKind] =
+    useState<ManagedSongIdKind>('string')
+  const [addSongId, setAddSongId] = useState('')
+  const [addSongName, setAddSongName] = useState('')
+  const [addSongSinger, setAddSongSinger] = useState('')
+  const [addSongAlbum, setAddSongAlbum] = useState('')
+  const [addSongInterval, setAddSongInterval] = useState('')
+  const [addSongValidationError, setAddSongValidationError] = useState<
+    string | null
+  >(null)
   const playlists = useQuery({
     queryKey: queryKeys.playlists(userId),
     queryFn: () => api.playlists(userId),
@@ -1000,6 +1057,9 @@ function PlaylistManager({ userId }: { userId: string }) {
       activePlaylistId ?? '',
       snapshotId,
       songQuery,
+      songSourceQuery,
+      songSingerQuery,
+      songAlbumQuery,
       offset,
       playlistPageSize,
     ),
@@ -1008,6 +1068,9 @@ function PlaylistManager({ userId }: { userId: string }) {
       return api.playlistSongs(userId, activePlaylistId, {
         snapshotId,
         q: songQuery,
+        source: songSourceQuery,
+        singer: songSingerQuery,
+        albumName: songAlbumQuery,
         offset,
         limit: playlistPageSize,
       })
@@ -1026,7 +1089,7 @@ function PlaylistManager({ userId }: { userId: string }) {
   useEffect(() => {
     setRenameName(activePlaylist?.name ?? '')
   }, [activePlaylist?.name])
-  const selectionScope = `${activePlaylistId ?? ''}\u0000${snapshotId}\u0000${songQuery}\u0000${offset}`
+  const selectionScope = `${activePlaylistId ?? ''}\u0000${snapshotId}\u0000${songQuery}\u0000${songSourceQuery}\u0000${songSingerQuery}\u0000${songAlbumQuery}\u0000${offset}`
   const selectedSongIds =
     songSelection.scope === selectionScope ? songSelection.ids : []
   const updateSelectedSongIds = (
@@ -1055,6 +1118,9 @@ function PlaylistManager({ userId }: { userId: string }) {
     ? selectedTargetPlaylistId
     : (targetPlaylists[0]?.id ?? '')
   const pageSongs = songs.data?.data ?? []
+  const hasActiveSongFilters = Boolean(
+    songQuery || songSourceQuery || songSingerQuery || songAlbumQuery,
+  )
   const allPageSongsSelected =
     pageSongs.length > 0 &&
     pageSongs.every((song) => selectedSongIds.includes(song.id))
@@ -1092,6 +1158,46 @@ function PlaylistManager({ userId }: { userId: string }) {
     onSuccess: async () => {
       setSelectedPlaylistId(null)
       clearSelectedSongIds()
+      await invalidateManagementData()
+    },
+  })
+  const addSong = useMutation({
+    mutationFn: (input: {
+      playlistId: string
+      id: string | number
+      source: ManagedSongSource
+      name: string
+      singer: string
+      albumName: string
+      interval: string | null
+      expectedSnapshotId: string
+    }) =>
+      api.addPlaylistSong(userId, input.playlistId, {
+        id: input.id,
+        source: input.source,
+        name: input.name,
+        singer: input.singer,
+        albumName: input.albumName,
+        interval: input.interval,
+        expectedSnapshotId: input.expectedSnapshotId,
+      }),
+    retry: false,
+    onSuccess: async () => {
+      setAddSongId('')
+      setAddSongName('')
+      setAddSongSinger('')
+      setAddSongAlbum('')
+      setAddSongInterval('')
+      setAddSongValidationError(null)
+      setSongSearchInput('')
+      setSongQuery('')
+      setSongSourceInput('')
+      setSongSourceQuery('')
+      setSongSingerInput('')
+      setSongSingerQuery('')
+      setSongAlbumInput('')
+      setSongAlbumQuery('')
+      setOffset(0)
       await invalidateManagementData()
     },
   })
@@ -1152,9 +1258,11 @@ function PlaylistManager({ userId }: { userId: string }) {
     createPlaylist.reset()
     renamePlaylist.reset()
     deletePlaylist.reset()
+    addSong.reset()
     removeSongs.reset()
     moveSongs.reset()
     copySongs.reset()
+    setAddSongValidationError(null)
   }
 
   const selectPlaylist = (playlistId: string) => {
@@ -1162,12 +1270,34 @@ function PlaylistManager({ userId }: { userId: string }) {
     setSelectedPlaylistId(playlistId)
     setSongSearchInput('')
     setSongQuery('')
+    setSongSourceInput('')
+    setSongSourceQuery('')
+    setSongSingerInput('')
+    setSongSingerQuery('')
+    setSongAlbumInput('')
+    setSongAlbumQuery('')
     setOffset(0)
+    setShowAddSong(false)
   }
 
   const searchSongs = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     setSongQuery(songSearchInput.trim())
+    setSongSourceQuery(songSourceInput)
+    setSongSingerQuery(songSingerInput.trim())
+    setSongAlbumQuery(songAlbumInput.trim())
+    setOffset(0)
+  }
+
+  const clearSongSearch = () => {
+    setSongSearchInput('')
+    setSongQuery('')
+    setSongSourceInput('')
+    setSongSourceQuery('')
+    setSongSingerInput('')
+    setSongSingerQuery('')
+    setSongAlbumInput('')
+    setSongAlbumQuery('')
     setOffset(0)
   }
 
@@ -1214,6 +1344,40 @@ function PlaylistManager({ userId }: { userId: string }) {
         expectedSnapshotId: snapshotId,
       })
     }
+  }
+
+  const submitAddSong = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!activePlaylistId || !snapshotId || activePlaylist?.type !== 'user')
+      return
+    resetMutationErrors()
+    const id = managedSongIdFromForm(addSongIdKind, addSongId)
+    const name = addSongName.trim()
+    const singer = addSongSinger.trim()
+    const albumName = addSongAlbum.trim()
+    const interval = addSongInterval.trim()
+    if (id === null) {
+      setAddSongValidationError('请输入有效的平台歌曲 ID。')
+      return
+    }
+    if (!name || !singer) {
+      setAddSongValidationError('歌名和歌手不能为空。')
+      return
+    }
+    if (interval !== '' && !managedIntervalPattern.test(interval)) {
+      setAddSongValidationError('时长格式应为 m:ss、mm:ss 或 mmm:ss。')
+      return
+    }
+    addSong.mutate({
+      playlistId: activePlaylistId,
+      id,
+      source: addSongSource,
+      name,
+      singer,
+      albumName,
+      interval: interval || null,
+      expectedSnapshotId: snapshotId,
+    })
   }
 
   const togglePageSongs = (checked: boolean) => {
@@ -1275,6 +1439,7 @@ function PlaylistManager({ userId }: { userId: string }) {
     createPlaylist.isPending ||
     renamePlaylist.isPending ||
     deletePlaylist.isPending ||
+    addSong.isPending ||
     removeSongs.isPending ||
     moveSongs.isPending ||
     copySongs.isPending
@@ -1383,24 +1548,83 @@ function PlaylistManager({ userId }: { userId: string }) {
                 </small>
               </span>
             </div>
-            {activePlaylistId && (
-              <form className="playlist-song-search" onSubmit={searchSongs}>
-                <label className="search-field">
-                  <span className="sr-only">搜索歌曲或歌手</span>
-                  <Search aria-hidden="true" size={17} />
-                  <input
-                    type="search"
-                    value={songSearchInput}
-                    placeholder="搜索歌曲、歌手或专辑"
-                    onChange={(event) => setSongSearchInput(event.target.value)}
-                  />
-                </label>
+          </div>
+          {activePlaylistId && (
+            <form className="playlist-song-search" onSubmit={searchSongs}>
+              <label className="search-field">
+                <span className="sr-only">搜索歌曲</span>
+                <Search aria-hidden="true" size={17} />
+                <input
+                  type="search"
+                  value={songSearchInput}
+                  placeholder="歌曲 ID、名称或任意字段"
+                  onChange={(event) => setSongSearchInput(event.target.value)}
+                />
+              </label>
+              <label>
+                <span className="sr-only">歌曲来源筛选</span>
+                <select
+                  aria-label="歌曲来源筛选"
+                  value={songSourceInput}
+                  onChange={(event) =>
+                    setSongSourceInput(
+                      event.target.value as ManagedSongSource | '',
+                    )
+                  }
+                >
+                  <option value="">全部来源</option>
+                  <option value="wy">网易云</option>
+                  <option value="tx">QQ 音乐</option>
+                  <option value="kw">酷我</option>
+                  <option value="kg">酷狗</option>
+                  <option value="mg">咪咕</option>
+                </select>
+              </label>
+              <label>
+                <span className="sr-only">歌手筛选</span>
+                <input
+                  value={songSingerInput}
+                  placeholder="筛选歌手"
+                  maxLength={256}
+                  onChange={(event) => setSongSingerInput(event.target.value)}
+                />
+              </label>
+              <label>
+                <span className="sr-only">专辑筛选</span>
+                <input
+                  value={songAlbumInput}
+                  placeholder="筛选专辑"
+                  maxLength={256}
+                  onChange={(event) => setSongAlbumInput(event.target.value)}
+                />
+              </label>
+              <div className="playlist-song-search-actions">
                 <button className="secondary" type="submit">
+                  <Search aria-hidden="true" size={16} />
                   搜索
                 </button>
-              </form>
-            )}
-          </div>
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="清除歌曲筛选"
+                  title="清除歌曲筛选"
+                  onClick={clearSongSearch}
+                  disabled={
+                    !songSearchInput &&
+                    !songQuery &&
+                    !songSourceInput &&
+                    !songSourceQuery &&
+                    !songSingerInput &&
+                    !songSingerQuery &&
+                    !songAlbumInput &&
+                    !songAlbumQuery
+                  }
+                >
+                  <X aria-hidden="true" size={17} />
+                </button>
+              </div>
+            </form>
+          )}
           {activePlaylist?.type === 'user' && (
             <form className="playlist-rename" onSubmit={submitRenamePlaylist}>
               <label>
@@ -1433,12 +1657,178 @@ function PlaylistManager({ userId }: { userId: string }) {
                 <Trash2 aria-hidden="true" size={16} />
                 删除歌单
               </button>
+              <button
+                className="primary"
+                type="button"
+                aria-expanded={showAddSong}
+                aria-controls="playlist-add-song-form"
+                onClick={() => {
+                  addSong.reset()
+                  setAddSongValidationError(null)
+                  setShowAddSong((current) => !current)
+                }}
+                disabled={activeMutationPending}
+              >
+                <Plus aria-hidden="true" size={16} />
+                添加歌曲
+              </button>
             </form>
           )}
           <PlaylistMutationError
             error={renamePlaylist.error ?? deletePlaylist.error}
             onRefresh={() => void refresh()}
           />
+          {activePlaylist?.type === 'user' && showAddSong && (
+            <form
+              id="playlist-add-song-form"
+              className="playlist-add-song"
+              onSubmit={submitAddSong}
+            >
+              <div className="playlist-add-song-heading">
+                <strong>添加平台歌曲</strong>
+                <button
+                  className="icon-button"
+                  type="button"
+                  aria-label="关闭添加歌曲"
+                  title="关闭"
+                  onClick={() => {
+                    addSong.reset()
+                    setAddSongValidationError(null)
+                    setShowAddSong(false)
+                  }}
+                >
+                  <X aria-hidden="true" size={17} />
+                </button>
+              </div>
+              <div className="playlist-add-song-grid">
+                <label>
+                  <span>音乐来源</span>
+                  <select
+                    value={addSongSource}
+                    onChange={(event) =>
+                      setAddSongSource(event.target.value as ManagedSongSource)
+                    }
+                    disabled={activeMutationPending}
+                  >
+                    <option value="wy">网易云</option>
+                    <option value="tx">QQ 音乐</option>
+                    <option value="kw">酷我</option>
+                    <option value="kg">酷狗</option>
+                    <option value="mg">咪咕</option>
+                  </select>
+                </label>
+                <fieldset className="playlist-id-kind">
+                  <legend>ID 类型</legend>
+                  <div className="segmented-control">
+                    <label>
+                      <input
+                        type="radio"
+                        name="managed-song-id-kind"
+                        value="string"
+                        checked={addSongIdKind === 'string'}
+                        onChange={() => setAddSongIdKind('string')}
+                        disabled={activeMutationPending}
+                      />
+                      <span>字符串</span>
+                    </label>
+                    <label>
+                      <input
+                        type="radio"
+                        name="managed-song-id-kind"
+                        value="number"
+                        checked={addSongIdKind === 'number'}
+                        onChange={() => setAddSongIdKind('number')}
+                        disabled={activeMutationPending}
+                      />
+                      <span>数字</span>
+                    </label>
+                  </div>
+                </fieldset>
+                <label>
+                  <span>平台歌曲 ID</span>
+                  <input
+                    value={addSongId}
+                    type={addSongIdKind === 'number' ? 'number' : 'text'}
+                    inputMode={addSongIdKind === 'number' ? 'numeric' : 'text'}
+                    min={addSongIdKind === 'number' ? 1 : undefined}
+                    step={addSongIdKind === 'number' ? 1 : undefined}
+                    maxLength={addSongIdKind === 'string' ? 1024 : undefined}
+                    required
+                    aria-invalid={addSongValidationError !== null}
+                    onChange={(event) => {
+                      setAddSongId(event.target.value)
+                      setAddSongValidationError(null)
+                    }}
+                    disabled={activeMutationPending}
+                  />
+                </label>
+                <label>
+                  <span>歌名</span>
+                  <input
+                    value={addSongName}
+                    maxLength={256}
+                    required
+                    onChange={(event) => setAddSongName(event.target.value)}
+                    disabled={activeMutationPending}
+                  />
+                </label>
+                <label>
+                  <span>歌手</span>
+                  <input
+                    value={addSongSinger}
+                    maxLength={256}
+                    required
+                    onChange={(event) => setAddSongSinger(event.target.value)}
+                    disabled={activeMutationPending}
+                  />
+                </label>
+                <label>
+                  <span>专辑（可选）</span>
+                  <input
+                    value={addSongAlbum}
+                    maxLength={256}
+                    onChange={(event) => setAddSongAlbum(event.target.value)}
+                    disabled={activeMutationPending}
+                  />
+                </label>
+                <label>
+                  <span>时长（可选）</span>
+                  <input
+                    value={addSongInterval}
+                    inputMode="numeric"
+                    placeholder="3:45"
+                    pattern="\d{1,3}:[0-5]\d"
+                    onChange={(event) => setAddSongInterval(event.target.value)}
+                    disabled={activeMutationPending}
+                  />
+                </label>
+              </div>
+              <div className="playlist-add-song-actions">
+                {addSong.isSuccess && (
+                  <span className="success-text" role="status">
+                    歌曲已添加
+                  </span>
+                )}
+                <button
+                  className="primary"
+                  type="submit"
+                  disabled={!snapshotId || activeMutationPending}
+                >
+                  <Plus aria-hidden="true" size={16} />
+                  {addSong.isPending ? '正在添加…' : '添加到歌单'}
+                </button>
+              </div>
+              {addSongValidationError && (
+                <p className="notice error" role="alert">
+                  {addSongValidationError}
+                </p>
+              )}
+              <PlaylistMutationError
+                error={addSong.error}
+                onRefresh={() => void refresh()}
+              />
+            </form>
+          )}
 
           {songs.error ? (
             <PlaylistMutationError
@@ -1612,7 +2002,9 @@ function PlaylistManager({ userId }: { userId: string }) {
               </div>
             </>
           ) : (
-            <Empty>{songQuery ? '没有匹配的歌曲。' : '该歌单暂无歌曲。'}</Empty>
+            <Empty>
+              {hasActiveSongFilters ? '没有匹配的歌曲。' : '该歌单暂无歌曲。'}
+            </Empty>
           )}
         </div>
       </div>
@@ -1643,7 +2035,13 @@ function PlaylistMutationError({
   if (error instanceof ApiError && error.code === 'PLAYLIST_IMMUTABLE')
     return (
       <p className="notice error" role="alert">
-        默认列表和收藏列表不能改名或删除。
+        默认列表和收藏列表不能改名、删除或手动新增歌曲。
+      </p>
+    )
+  if (error instanceof ApiError && error.code === 'SONG_ALREADY_EXISTS')
+    return (
+      <p className="notice error" role="alert">
+        该类型的歌曲 ID 已存在于当前歌单。
       </p>
     )
   if (error instanceof ApiError && error.code === 'PLAYLIST_ID_AMBIGUOUS')

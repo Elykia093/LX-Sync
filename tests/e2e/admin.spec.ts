@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import { expect, test } from '@playwright/test'
 
 const adminUsername = requiredEnvironment('ADMIN_USERNAME')
@@ -7,6 +8,7 @@ const adminPassword = requiredEnvironment('ADMIN_PASSWORD')
 test('管理员可从失败登录恢复并完成用户管理与审计旅程', async ({ page }) => {
   const userName = `e2e-${randomUUID().slice(0, 12)}`
   const connectionCode = `code-${randomUUID()}`
+  let userId = ''
 
   await test.step('错误登录返回可恢复的认证错误', async () => {
     await page.goto('/')
@@ -58,6 +60,7 @@ test('管理员可从失败登录恢复并完成用户管理与审计旅程', as
     const createResponse = await createResponsePromise
     expect(createResponse.status()).toBe(201)
     const createdUser = (await createResponse.json()) as { id: string }
+    userId = createdUser.id
     expect(createdUser.id).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
     )
@@ -101,7 +104,113 @@ test('管理员可从失败登录恢复并完成用户管理与审计旅程', as
     await expect(page.getByLabel('新增歌曲位置')).toHaveValue('bottom')
   })
 
-  await test.step('审计记录包含创建和设置更新', async () => {
+  await test.step('歌单写入、组合筛选和快照导出贯通真实服务', async () => {
+    const playlistName = `e2e-playlist-${randomUUID().slice(0, 8)}`
+    const songId = `e2e-song-${randomUUID().slice(0, 8)}`
+    const songName = 'E2E 平台歌曲'
+    const singer = 'E2E 歌手'
+    const albumName = 'E2E 专辑'
+
+    await page.getByPlaceholder('新建自建歌单').fill(playlistName)
+    const createPlaylistResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname ===
+          `/api/v1/users/${userId}/playlists`,
+    )
+    await page.getByRole('button', { name: '新建', exact: true }).click()
+
+    const createPlaylistResponse = await createPlaylistResponsePromise
+    expect(createPlaylistResponse.status()).toBe(201)
+    const createdPlaylist = (await createPlaylistResponse.json()) as {
+      playlist: { id: string; name: string }
+    }
+    expect(createdPlaylist.playlist.name).toBe(playlistName)
+    await expect(
+      page.getByRole('button', { name: new RegExp(playlistName) }),
+    ).toBeVisible()
+
+    await page.getByRole('button', { name: '添加歌曲' }).click()
+    await page.getByLabel('平台歌曲 ID').fill(songId)
+    await page.getByLabel('歌名', { exact: true }).fill(songName)
+    await page.getByLabel('歌手', { exact: true }).fill(singer)
+    await page.getByLabel('专辑（可选）').fill(albumName)
+    await page.getByLabel('时长（可选）').fill('3:45')
+    const addSongResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname ===
+          `/api/v1/users/${userId}/playlists/${encodeURIComponent(createdPlaylist.playlist.id)}/songs`,
+    )
+    await page.getByRole('button', { name: '添加到歌单' }).click()
+
+    const addSongResponse = await addSongResponsePromise
+    expect(addSongResponse.status()).toBe(201)
+    expect(await addSongResponse.json()).toMatchObject({ affectedSongCount: 1 })
+    await expect(
+      page.getByRole('row').filter({ hasText: songId }),
+    ).toContainText(songName)
+
+    await page.getByLabel('歌曲来源筛选').selectOption('wy')
+    await page.getByLabel('歌手筛选').fill(singer)
+    await page.getByLabel('专辑筛选').fill(albumName)
+    const filterResponsePromise = page.waitForResponse((response) => {
+      const url = new URL(response.url())
+      return (
+        response.request().method() === 'GET' &&
+        url.pathname ===
+          `/api/v1/users/${userId}/playlists/${encodeURIComponent(createdPlaylist.playlist.id)}` &&
+        url.searchParams.get('source') === 'wy' &&
+        url.searchParams.get('singer') === singer &&
+        url.searchParams.get('albumName') === albumName
+      )
+    })
+    await page.getByRole('button', { name: '搜索', exact: true }).click()
+
+    const filterResponse = await filterResponsePromise
+    expect(filterResponse.status()).toBe(200)
+    expect(await filterResponse.json()).toMatchObject({ total: 1 })
+    await expect(
+      page.getByRole('row').filter({ hasText: songId }),
+    ).toContainText(singer)
+
+    const listSnapshotPanel = page
+      .getByRole('heading', { name: '歌单快照', exact: true })
+      .locator('..')
+    const downloadPromise = page.waitForEvent('download')
+    await listSnapshotPanel
+      .getByRole('link', { name: '导出', exact: true })
+      .first()
+      .click()
+    const download = await downloadPromise
+    expect(download.suggestedFilename()).toMatch(
+      /^lx-sync-list-[0-9a-f-]+\.json$/i,
+    )
+    const downloadPath = await download.path()
+    expect(downloadPath).not.toBeNull()
+    const exported = JSON.parse(
+      await readFile(downloadPath as string, 'utf8'),
+    ) as {
+      format: string
+      version: number
+      userId: string
+      domain: string
+      snapshot: { data: { userList: Array<{ id: string }> } }
+    }
+    expect(exported).toMatchObject({
+      format: 'lx-sync.snapshot',
+      version: 1,
+      userId,
+      domain: 'list',
+    })
+    expect(exported.snapshot.data.userList).toContainEqual(
+      expect.objectContaining({
+        id: createdPlaylist.playlist.id.replace(/^user:/, ''),
+      }),
+    )
+  })
+
+  await test.step('审计记录包含用户和歌单写入', async () => {
     const auditResponsePromise = page.waitForResponse(
       (response) =>
         response.request().method() === 'GET' &&
@@ -118,6 +227,12 @@ test('管理员可从失败登录恢复并完成用户管理与审计旅程', as
     ).toBeVisible()
     await expect(
       page.getByRole('cell', { name: 'user.update', exact: true }),
+    ).toBeVisible()
+    await expect(
+      page.getByRole('cell', { name: 'playlist.create', exact: true }),
+    ).toBeVisible()
+    await expect(
+      page.getByRole('cell', { name: 'playlist.songs.add', exact: true }),
     ).toBeVisible()
   })
 

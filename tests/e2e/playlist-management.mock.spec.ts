@@ -24,7 +24,7 @@ interface MockPlaylist {
 }
 
 interface MutationRecord {
-  action: 'create' | 'rename' | 'delete' | 'remove' | 'move' | 'copy'
+  action: 'create' | 'rename' | 'delete' | 'add' | 'remove' | 'move' | 'copy'
   body: Record<string, unknown>
 }
 
@@ -35,8 +35,10 @@ interface MockState {
   snapshots: Map<string, MockPlaylist[]>
   failNextRename: boolean
   failNextCopy: boolean
+  failNextAdd: boolean
   playlistReads: number
   renameRequests: number
+  addRequests: number
   mutations: MutationRecord[]
   unhandled: string[]
 }
@@ -72,6 +74,84 @@ test('管理员可创建、改名、删除歌单并批量复制、移动、移�
     await expect(
       page.getByRole('button', { name: /已重命名歌单/ }),
     ).toHaveCount(0)
+  })
+
+  await test.step('向空自建歌单添加字符串和数字平台歌曲', async () => {
+    await page.getByRole('button', { name: /目标歌单/ }).click()
+    await page.getByRole('button', { name: '添加歌曲' }).click()
+    await page.getByLabel('音乐来源').selectOption('wy')
+    await page.getByRole('radio', { name: '字符串', exact: true }).check()
+    await page.getByLabel('平台歌曲 ID').fill('platform-2')
+    await page.getByLabel('歌名').fill('字符串平台歌曲')
+    await page.getByLabel('歌手', { exact: true }).fill('平台歌手')
+    await page.getByLabel('专辑（可选）').fill('平台专辑')
+    await page.getByLabel('时长（可选）').fill('3:45')
+    await page.getByRole('button', { name: '添加到歌单' }).click()
+    await expect.poll(() => mutationCount(state, 'add')).toBe(1)
+    expect(lastMutation(state, 'add')?.body.id).toBe('platform-2')
+    await expect(
+      page.getByText('字符串平台歌曲', { exact: true }),
+    ).toBeVisible()
+
+    await page.getByRole('radio', { name: '数字', exact: true }).check()
+    await page.getByLabel('平台歌曲 ID').fill('9002')
+    await page.getByLabel('歌名').fill('数字平台歌曲')
+    await page.getByLabel('歌手', { exact: true }).fill('平台歌手')
+    await page.getByRole('button', { name: '添加到歌单' }).click()
+    await expect.poll(() => mutationCount(state, 'add')).toBe(2)
+    expect(lastMutation(state, 'add')?.body.id).toBe(9002)
+    await expect(page.getByText('数字平台歌曲', { exact: true })).toBeVisible()
+
+    await page.getByRole('radio', { name: '字符串', exact: true }).check()
+    await page.getByLabel('平台歌曲 ID').fill('platform-2')
+    await page.getByLabel('歌名').fill('重复平台歌曲')
+    await page.getByLabel('歌手', { exact: true }).fill('平台歌手')
+    await page.getByRole('button', { name: '添加到歌单' }).click()
+    await expect(page.getByRole('alert')).toContainText(
+      '该类型的歌曲 ID 已存在于当前歌单。',
+    )
+    expect(mutationCount(state, 'add')).toBe(2)
+
+    state.failNextAdd = true
+    const readsBeforeConflictRefresh = state.playlistReads
+    await page.getByLabel('平台歌曲 ID').fill('after-conflict')
+    await page.getByLabel('歌名').fill('冲突后歌曲')
+    await page.getByRole('button', { name: '添加到歌单' }).click()
+    await expect(page.getByRole('alert')).toContainText(
+      '歌单已被其他设备或管理员更新，请刷新后重新操作。',
+    )
+    await page.getByRole('button', { name: '立即刷新' }).click()
+    await expect
+      .poll(() => state.playlistReads)
+      .toBeGreaterThan(readsBeforeConflictRefresh)
+    await expect(page.getByLabel('平台歌曲 ID')).toHaveValue('after-conflict')
+    await page.getByRole('button', { name: '添加到歌单' }).click()
+    await expect.poll(() => mutationCount(state, 'add')).toBe(3)
+    await expect(page.getByText('冲突后歌曲', { exact: true })).toBeVisible()
+    await page.screenshot({
+      path: testInfo.outputPath('playlist-add-song-desktop.png'),
+      fullPage: false,
+      animations: 'disabled',
+    })
+  })
+
+  await test.step('按来源、歌手和专辑组合筛选当前歌单', async () => {
+    await page.getByRole('button', { name: /默认列表/ }).click()
+    await page.getByLabel('歌曲来源筛选').selectOption('wy')
+    await page.getByPlaceholder('筛选歌手').fill('筛选歌手')
+    await page.getByPlaceholder('筛选专辑').fill('筛选专辑')
+    await page.getByRole('button', { name: '搜索', exact: true }).click()
+    await expect(page.getByText('筛选目标歌曲', { exact: true })).toBeVisible()
+    await expect(page.getByText('数字歌曲', { exact: true })).toHaveCount(0)
+    await page.getByRole('button', { name: '清除歌曲筛选' }).click()
+    await expect(page.getByText('数字歌曲', { exact: true })).toBeVisible()
+
+    await page.getByLabel('歌曲来源筛选').selectOption('mg')
+    await page.getByRole('button', { name: '搜索', exact: true }).click()
+    await expect(
+      page.getByText('没有匹配的歌曲。', { exact: true }),
+    ).toBeVisible()
+    await page.getByRole('button', { name: '清除歌曲筛选' }).click()
   })
 
   await test.step('数字与字符串歌曲 ID 在复制和移动时保持区分', async () => {
@@ -143,6 +223,24 @@ test('管理员可创建、改名、删除歌单并批量复制、移动、移�
   })
 
   await page.getByRole('heading', { name: '歌单管理' }).scrollIntoViewIfNeeded()
+  const compactPlaylistLayout = await page
+    .locator('.playlist-browser')
+    .evaluate((element) => {
+      const sidebar = element.querySelector<HTMLElement>('.playlist-sidebar')
+      const content = element.querySelector<HTMLElement>('.playlist-content')
+      if (!sidebar || !content) throw new Error('Playlist layout is incomplete')
+      const sidebarBox = sidebar.getBoundingClientRect()
+      const contentBox = content.getBoundingClientRect()
+      return {
+        sidebarHeight: sidebarBox.height,
+        sidebarBottom: sidebarBox.bottom,
+        contentTop: contentBox.top,
+      }
+    })
+  expect(compactPlaylistLayout.sidebarHeight).toBeLessThan(220)
+  expect(compactPlaylistLayout.contentTop).toBeGreaterThanOrEqual(
+    compactPlaylistLayout.sidebarBottom - 1,
+  )
   await page.screenshot({
     path: testInfo.outputPath('playlist-management-desktop.png'),
     fullPage: false,
@@ -155,7 +253,7 @@ test('管理员可创建、改名、删除歌单并批量复制、移动、移�
   ).toEqual([])
   expect(
     browserErrors.filter((message) => message.includes('409 (Conflict)')),
-  ).toHaveLength(2)
+  ).toHaveLength(4)
 })
 
 test('歌单管理在桌面、平板和手机视口保持可操作', async ({ page }, testInfo) => {
@@ -233,16 +331,51 @@ test('歌单管理在桌面、平板和手机视口保持可操作', async ({ pa
     })
     expect(hasPageOverflow).toBe(false)
 
-    if (viewport.width <= 1024) {
-      const playlistList = page.locator('.playlist-list')
-      await expect(playlistList).toHaveCSS('overflow-y', 'auto')
-      const scrollMetrics = await playlistList.evaluate((element) => ({
-        clientHeight: element.clientHeight,
-        scrollHeight: element.scrollHeight,
-      }))
-      expect(scrollMetrics.scrollHeight).toBeGreaterThan(
-        scrollMetrics.clientHeight,
+    const playlistList = page.locator('.playlist-list')
+    await expect(playlistList).toHaveCSS('overflow-y', 'auto')
+    const scrollMetrics = await playlistList.evaluate((element) => ({
+      clientHeight: element.clientHeight,
+      scrollHeight: element.scrollHeight,
+      columns: getComputedStyle(element)
+        .gridTemplateColumns.split(' ')
+        .filter(Boolean).length,
+    }))
+    expect(scrollMetrics.scrollHeight).toBeGreaterThan(
+      scrollMetrics.clientHeight,
+    )
+
+    if (viewport.width > 1024) {
+      const desktopLayout = await page
+        .locator('.playlist-browser')
+        .evaluate((element) => {
+          const sidebar =
+            element.querySelector<HTMLElement>('.playlist-sidebar')
+          const content =
+            element.querySelector<HTMLElement>('.playlist-content')
+          if (!sidebar || !content)
+            throw new Error('Playlist layout is incomplete')
+          const browserBox = element.getBoundingClientRect()
+          const sidebarBox = sidebar.getBoundingClientRect()
+          const contentBox = content.getBoundingClientRect()
+          return {
+            browserWidth: browserBox.width,
+            sidebarWidth: sidebarBox.width,
+            sidebarBottom: sidebarBox.bottom,
+            contentTop: contentBox.top,
+          }
+        })
+      expect(desktopLayout.sidebarWidth).toBeGreaterThanOrEqual(
+        desktopLayout.browserWidth - 1,
       )
+      expect(desktopLayout.contentTop).toBeGreaterThanOrEqual(
+        desktopLayout.sidebarBottom - 1,
+      )
+      expect(scrollMetrics.columns).toBeGreaterThan(1)
+
+      const desktopSidebarWidth = await page
+        .locator('.sidebar')
+        .evaluate((element) => element.getBoundingClientRect().width)
+      expect(desktopSidebarWidth).toBeLessThanOrEqual(240)
     }
 
     if (viewport.width <= 680) {
@@ -271,6 +404,31 @@ test('歌单管理在桌面、平板和手机视口保持可操作', async ({ pa
       expect(longIdMetrics.scrollWidth).toBeLessThanOrEqual(
         longIdMetrics.clientWidth + 1,
       )
+
+      await page.getByRole('button', { name: /目标歌单/ }).click()
+      await expect(page.getByRole('button', { name: '添加歌曲' })).toBeVisible()
+      await page.getByRole('button', { name: '添加歌曲' }).click()
+      await expect(page.getByLabel('平台歌曲 ID')).toBeVisible()
+      const addSongInputFontSize = await page
+        .getByLabel('平台歌曲 ID')
+        .evaluate((element) =>
+          Number.parseFloat(getComputedStyle(element).fontSize),
+        )
+      expect(addSongInputFontSize).toBeGreaterThanOrEqual(16)
+      const hasOpenFormOverflow = await page.evaluate(() => {
+        const scrollingElement =
+          document.scrollingElement ?? document.documentElement
+        return scrollingElement.scrollWidth > scrollingElement.clientWidth + 1
+      })
+      expect(hasOpenFormOverflow).toBe(false)
+      await page.screenshot({
+        path: testInfo.outputPath(
+          `playlist-add-song-${viewport.width}x${viewport.height}.png`,
+        ),
+        fullPage: false,
+        animations: 'disabled',
+      })
+      await page.getByRole('button', { name: '关闭添加歌曲' }).click()
     }
 
     if (viewport.width === 390) {
@@ -350,6 +508,12 @@ function createMockState(extraPlaylistCount: number): MockState {
         song('2', '字符串歌曲'),
         song('remove-me', '待移除歌曲'),
         song(longSongId, '长标识歌曲'),
+        {
+          ...song('filter-target', '筛选目标歌曲'),
+          singer: '筛选歌手',
+          albumName: '筛选专辑',
+          source: 'wy',
+        },
       ],
     },
     {
@@ -374,8 +538,10 @@ function createMockState(extraPlaylistCount: number): MockState {
     snapshots: new Map([[initialSnapshotId, clonePlaylists(playlists)]]),
     failNextRename: false,
     failNextCopy: false,
+    failNextAdd: false,
     playlistReads: 0,
     renameRequests: 0,
+    addRequests: 0,
     mutations: [],
     unhandled: [],
   }
@@ -535,6 +701,41 @@ async function handleApi(route: Route, state: MockState): Promise<void> {
       return
     }
 
+    if (method === 'POST' && action === 'songs') {
+      state.addRequests += 1
+      if (state.failNextAdd) {
+        state.failNextAdd = false
+        advanceSnapshot(state)
+        await fulfillProblem(route, 409, 'SNAPSHOT_CONFLICT')
+        return
+      }
+      const id = body.id
+      if (typeof id !== 'string' && typeof id !== 'number')
+        throw new Error('Expected string or number song ID')
+      if (playlist.songs.some((item) => item.id === id)) {
+        await fulfillProblem(route, 409, 'SONG_ALREADY_EXISTS')
+        return
+      }
+      const interval = body.interval
+      if (typeof interval !== 'string' && interval !== null)
+        throw new Error('Expected string or null interval')
+      playlist.songs.push({
+        id,
+        source: stringField(body, 'source'),
+        name: stringField(body, 'name'),
+        singer: stringField(body, 'singer'),
+        albumName: stringField(body, 'albumName'),
+        interval,
+      })
+      state.mutations.push({ action: 'add', body })
+      advanceSnapshot(state)
+      await route.fulfill({
+        status: 201,
+        json: { ...mutationResponse(state), affectedSongCount: 1 },
+      })
+      return
+    }
+
     const songIds = songIdsField(body)
     if (method === 'DELETE' && action === 'songs') {
       playlist.songs = playlist.songs.filter(
@@ -602,14 +803,28 @@ function playlistDetailResponse(
   url: URL,
 ) {
   const query = (url.searchParams.get('q') ?? '').trim().toLocaleLowerCase()
+  const source = url.searchParams.get('source') ?? ''
+  const singer = (url.searchParams.get('singer') ?? '')
+    .trim()
+    .toLocaleLowerCase()
+  const albumName = (url.searchParams.get('albumName') ?? '')
+    .trim()
+    .toLocaleLowerCase()
   const offset = Number(url.searchParams.get('offset') ?? 0)
   const limit = Number(url.searchParams.get('limit') ?? 25)
-  const songs = playlist.songs.filter((item) =>
-    [item.id, item.name, item.singer, item.albumName, item.source].some(
-      (value) =>
-        value !== null && String(value).toLocaleLowerCase().includes(query),
-    ),
-  )
+  const songs = playlist.songs
+    .map((item, index) => ({ ...item, position: index + 1 }))
+    .filter(
+      (item) =>
+        [item.id, item.name, item.singer, item.albumName, item.source].some(
+          (value) =>
+            value !== null && String(value).toLocaleLowerCase().includes(query),
+        ) &&
+        (source === '' || item.source === source) &&
+        (singer === '' || item.singer?.toLocaleLowerCase().includes(singer)) &&
+        (albumName === '' ||
+          item.albumName?.toLocaleLowerCase().includes(albumName)),
+    )
   return {
     snapshotId: requestedSnapshotId,
     snapshotCreatedAt: createdAt,
@@ -617,10 +832,7 @@ function playlistDetailResponse(
     offset,
     limit,
     total: songs.length,
-    data: songs.slice(offset, offset + limit).map((item, index) => ({
-      ...item,
-      position: offset + index + 1,
-    })),
+    data: songs.slice(offset, offset + limit),
   }
 }
 

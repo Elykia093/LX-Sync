@@ -77,6 +77,7 @@ const playlistUpsertSchema = playlistMutationSchema.extend({
 const playlistSongMutationSchema = playlistMutationSchema.extend({
   affectedSongCount: z.number().int().min(0),
 })
+const managedSongSourceSchema = z.enum(['kw', 'kg', 'tx', 'wy', 'mg'])
 const auditEventSchema = z.object({
   id: z.string(),
   actor: z.string(),
@@ -103,6 +104,27 @@ export type PlaylistSong = z.infer<typeof playlistSongSchema>
 export type PlaylistList = z.infer<typeof playlistListSchema>
 export type PlaylistDetail = z.infer<typeof playlistDetailSchema>
 export type AuditEvent = z.infer<typeof auditEventSchema>
+export type ManagedSongSource = z.infer<typeof managedSongSourceSchema>
+
+export interface AddPlaylistSongInput {
+  id: string | number
+  source: ManagedSongSource
+  name: string
+  singer: string
+  albumName?: string
+  interval?: string | null
+  expectedSnapshotId: string
+}
+
+export interface PlaylistSongQuery {
+  snapshotId: string
+  q: string
+  source?: ManagedSongSource | ''
+  singer?: string
+  albumName?: string
+  offset: number
+  limit: number
+}
 
 export const parseServerStatus = (value: unknown): ServerStatus =>
   statusSchema.parse(value)
@@ -204,11 +226,14 @@ export function snapshotExportPath(
 export function playlistDetailPath(
   userId: string,
   playlistId: string,
-  query: { snapshotId: string; q: string; offset: number; limit: number },
+  query: PlaylistSongQuery,
 ): string {
   const search = new URLSearchParams()
   search.set('snapshotId', query.snapshotId)
   if (query.q !== '') search.set('q', query.q)
+  if (query.source) search.set('source', query.source)
+  if (query.singer) search.set('singer', query.singer)
+  if (query.albumName) search.set('albumName', query.albumName)
   search.set('offset', String(query.offset))
   search.set('limit', String(query.limit))
   return `/users/${encoded(userId)}/playlists/${encoded(playlistId)}?${search.toString()}`
@@ -261,7 +286,7 @@ export const api = {
   playlistSongs: (
     userId: string,
     playlistId: string,
-    query: { snapshotId: string; q: string; offset: number; limit: number },
+    query: PlaylistSongQuery,
   ) =>
     request(
       playlistDetailPath(userId, playlistId, query),
@@ -294,6 +319,16 @@ export const api = {
       `/users/${encoded(userId)}/playlists/${encoded(playlistId)}`,
       playlistMutationSchema,
       { method: 'DELETE', body: json({ expectedSnapshotId }) },
+    ),
+  addPlaylistSong: (
+    userId: string,
+    playlistId: string,
+    input: AddPlaylistSongInput,
+  ) =>
+    request(
+      `/users/${encoded(userId)}/playlists/${encoded(playlistId)}/songs`,
+      playlistSongMutationSchema,
+      { method: 'POST', body: json(input) },
     ),
   removePlaylistSongs: (
     userId: string,

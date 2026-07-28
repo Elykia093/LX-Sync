@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   applyLoggedOutState,
   invalidatePlaylistManagementQueries,
+  managedSongIdFromForm,
   playlistOffsetForTotal,
   queryKeys,
   sessionLoginError,
@@ -118,11 +119,14 @@ describe('playlistDetailPath', () => {
       playlistDetailPath('00000000-0000-4000-8000-000000000001', 'road/trip', {
         snapshotId: '00000000-0000-4000-8000-000000000002',
         q: '夜 曲',
+        source: 'wy',
+        singer: '周',
+        albumName: '十一月',
         offset: 25,
         limit: 25,
       }),
     ).toBe(
-      '/users/00000000-0000-4000-8000-000000000001/playlists/road%2Ftrip?snapshotId=00000000-0000-4000-8000-000000000002&q=%E5%A4%9C+%E6%9B%B2&offset=25&limit=25',
+      '/users/00000000-0000-4000-8000-000000000001/playlists/road%2Ftrip?snapshotId=00000000-0000-4000-8000-000000000002&q=%E5%A4%9C+%E6%9B%B2&source=wy&singer=%E5%91%A8&albumName=%E5%8D%81%E4%B8%80%E6%9C%88&offset=25&limit=25',
     )
   })
 
@@ -171,6 +175,23 @@ describe('playlistDetailPath', () => {
   })
 })
 
+describe('managedSongIdFromForm', () => {
+  it('preserves the selected ID type and rejects pseudo identifiers', () => {
+    expect(managedSongIdFromForm('string', ' 2 ')).toBe('2')
+    expect(managedSongIdFromForm('number', '2')).toBe(2)
+    expect(managedSongIdFromForm('string', 'local_123')).toBeNull()
+    expect(managedSongIdFromForm('string', 'local-track')).toBeNull()
+    expect(managedSongIdFromForm('string', '---')).toBeNull()
+    expect(managedSongIdFromForm('string', 'track.mp3')).toBeNull()
+    expect(managedSongIdFromForm('number', '0')).toBeNull()
+    expect(managedSongIdFromForm('number', '1.5')).toBeNull()
+    expect(managedSongIdFromForm('number', '1e3')).toBeNull()
+    expect(managedSongIdFromForm('number', '0x10')).toBeNull()
+    expect(managedSongIdFromForm('number', '+2')).toBeNull()
+    expect(managedSongIdFromForm('number', '0002')).toBe(2)
+  })
+})
+
 describe('invalidatePlaylistManagementQueries', () => {
   it('invalidates every management consumer after a write', async () => {
     const queryClient = new QueryClient()
@@ -178,7 +199,17 @@ describe('invalidatePlaylistManagementQueries', () => {
     const snapshotId = '00000000-0000-4000-8000-000000000002'
     const keys = [
       queryKeys.playlists(userId),
-      queryKeys.playlistSongs(userId, 'user:road-trip', snapshotId, '', 0, 25),
+      queryKeys.playlistSongs(
+        userId,
+        'user:road-trip',
+        snapshotId,
+        '',
+        '',
+        '',
+        '',
+        0,
+        25,
+      ),
       queryKeys.snapshots(userId, 'list'),
       queryKeys.audit,
     ] as const

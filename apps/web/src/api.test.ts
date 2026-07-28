@@ -42,6 +42,9 @@ describe('playlist API client', () => {
     const detail = await api.playlistSongs(userId, 'user:road/trip', {
       snapshotId,
       q: 'night song',
+      source: 'wy',
+      singer: 'artist',
+      albumName: 'album',
       offset: 25,
       limit: 25,
     })
@@ -50,7 +53,7 @@ describe('playlist API client', () => {
       expect.objectContaining({ id: 7, position: 26, source: 'wy' }),
     ])
     expect(fetchMock).toHaveBeenCalledWith(
-      `/api/v1/users/${userId}/playlists/user%3Aroad%2Ftrip?snapshotId=${snapshotId}&q=night+song&offset=25&limit=25`,
+      `/api/v1/users/${userId}/playlists/user%3Aroad%2Ftrip?snapshotId=${snapshotId}&q=night+song&source=wy&singer=artist&albumName=album&offset=25&limit=25`,
       { headers: {} },
     )
   })
@@ -87,6 +90,58 @@ describe('playlist API client', () => {
           name: 'New playlist',
           expectedSnapshotId: snapshotId,
         }),
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  })
+
+  it('preserves the selected string or numeric platform song ID', async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(
+        Response.json(
+          {
+            snapshotId,
+            snapshotCreatedAt: createdAt,
+            affectedSongCount: 1,
+          },
+          { status: 201 },
+        ),
+      ),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const baseInput = {
+      source: 'wy' as const,
+      name: 'Managed song',
+      singer: 'Managed singer',
+      albumName: '',
+      interval: null,
+      expectedSnapshotId: snapshotId,
+    }
+    await api.addPlaylistSong(userId, 'user:target', {
+      ...baseInput,
+      id: '2',
+    })
+    await api.addPlaylistSong(userId, 'user:target', {
+      ...baseInput,
+      id: 2,
+    })
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      `/api/v1/users/${userId}/playlists/user%3Atarget/songs`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ ...baseInput, id: '2' }),
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `/api/v1/users/${userId}/playlists/user%3Atarget/songs`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ ...baseInput, id: 2 }),
         headers: { 'Content-Type': 'application/json' },
       },
     )

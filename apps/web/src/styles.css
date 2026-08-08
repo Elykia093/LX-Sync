@@ -953,7 +953,7 @@ select:focus {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px;
-  margin-top: 0;
+  margin-top: 12px;
 }
 
 .playlist-create label {
@@ -965,31 +965,24 @@ select:focus {
 }
 
 .playlist-browser {
-  display: block;
-  min-height: 0;
+  display: grid;
+  min-height: 440px;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
   margin: 24px -24px -24px;
   border-top: 1px solid var(--border-default);
 }
 
 .playlist-sidebar {
-  display: grid;
+  display: flex;
   min-width: 0;
-  grid-template-columns: minmax(210px, 0.8fr) minmax(360px, 1.25fr) auto;
-  grid-template-areas:
-    "search create snapshot"
-    "list list list";
-  gap: 12px 16px;
-  padding: 20px 24px;
-  border-bottom: 1px solid var(--border-default);
+  flex-direction: column;
+  padding: 20px;
+  border-right: 1px solid var(--border-default);
   background: color-mix(
     in srgb,
     var(--surface-muted) 42%,
     var(--surface-panel)
   );
-}
-
-.playlist-sidebar > .playlist-create {
-  grid-area: create;
 }
 
 .search-field {
@@ -1014,17 +1007,11 @@ select:focus {
   padding-left: 38px;
 }
 
-.playlist-sidebar > .search-field {
-  grid-area: search;
-}
-
 .playlist-list {
   display: grid;
-  grid-area: list;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
-  gap: 6px;
-  max-height: 122px;
-  margin-top: 0;
+  gap: 4px;
+  max-height: 440px;
+  margin-top: 14px;
   overflow-y: auto;
 }
 
@@ -1037,9 +1024,9 @@ select:focus {
   gap: 12px;
   padding: 10px 12px;
   color: var(--text-primary);
-  border: 1px solid var(--border-default);
+  border: 1px solid transparent;
   border-radius: 8px;
-  background: var(--surface-panel);
+  background: transparent;
   font-size: var(--font-body);
   text-align: left;
   transition:
@@ -1094,13 +1081,9 @@ select:focus {
 }
 
 .playlist-snapshot-time {
-  grid-area: snapshot;
-  align-self: center;
-  margin: 0;
-  padding: 0;
+  margin-top: auto;
+  padding-top: 18px;
   line-height: 1.5;
-  text-align: right;
-  white-space: nowrap;
 }
 
 .playlist-content {
@@ -1540,18 +1523,6 @@ td.actions {
   .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .playlist-sidebar {
-    grid-template-columns: minmax(200px, 0.8fr) minmax(320px, 1.2fr);
-    grid-template-areas:
-      "search create"
-      "list list"
-      "snapshot snapshot";
-  }
-
-  .playlist-snapshot-time {
-    text-align: left;
-  }
 }
 
 @media (max-width: 1024px) {
@@ -1661,7 +1632,12 @@ td.actions {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .playlist-browser {
+    display: block;
+  }
+
   .playlist-sidebar {
+    border-right: 0;
     border-bottom: 1px solid var(--border-default);
   }
 
@@ -1742,15 +1718,6 @@ td.actions {
   .playlist-sidebar,
   .playlist-content {
     padding: 18px;
-  }
-
-  .playlist-sidebar {
-    grid-template-columns: 1fr;
-    grid-template-areas:
-      "search"
-      "create"
-      "list"
-      "snapshot";
   }
 
   .playlist-snapshot-time {

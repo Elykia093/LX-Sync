@@ -2,6 +2,8 @@
 
 评估对象为 [XCQ0607/lxserver v2.0.0](https://github.com/XCQ0607/lxserver/releases/tag/v2.0.0)，发布于 2026-07-22，tag 指向提交 `d0ee845ef8f98f46f72ac79546581a025041605f`。本文只记录可验证的设计取舍；LX-Sync 未复制该项目代码。
 
+现有 v2.0 文件数据迁移到 LX-Sync 的操作步骤见 [lxserver v2.0 迁移手册](migrate-from-lxserver-v2.md)。
+
 ## 采用的思路
 
 - 添加歌曲前必须同时具备受支持的 `source` 和平台歌曲 ID，拒绝 `unknown`、`local`、文件名回退值等伪标识。

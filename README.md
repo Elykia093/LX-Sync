@@ -259,6 +259,8 @@ TRUST_PROXY=true
 
 生产备份与隔离恢复演练按 [docs/backup-and-restore.md](docs/backup-and-restore.md) 执行。备份必须同时覆盖 PostgreSQL 和当前 `MASTER_KEY`，并把两者保存为使用不同凭据和加密仓库的独立恢复对象。
 
+从 `XCQ0607/lxserver v2.0.0` 文件数据目录迁移到空 LX-Sync 数据库时，按 [lxserver v2.0 迁移手册](docs/migrate-from-lxserver-v2.md) 先执行只读 dry-run，再在隔离环境验证后显式启用写入门禁。
+
 以下命令只生成 Compose 数据库 dump，不是完整备份；它没有保存密钥、上传远端、建立不可变保留或证明能够恢复：
 
 ```powershell

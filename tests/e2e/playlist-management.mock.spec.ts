@@ -233,14 +233,21 @@ test('管理员可创建、改名、删除歌单并批量复制、移动、移�
       const contentBox = content.getBoundingClientRect()
       return {
         sidebarHeight: sidebarBox.height,
-        sidebarBottom: sidebarBox.bottom,
+        sidebarTop: sidebarBox.top,
+        sidebarRight: sidebarBox.right,
         contentTop: contentBox.top,
+        contentLeft: contentBox.left,
       }
     })
-  expect(compactPlaylistLayout.sidebarHeight).toBeLessThan(220)
-  expect(compactPlaylistLayout.contentTop).toBeGreaterThanOrEqual(
-    compactPlaylistLayout.sidebarBottom - 1,
+  expect(compactPlaylistLayout.sidebarHeight).toBeGreaterThan(220)
+  expect(compactPlaylistLayout.contentLeft).toBeGreaterThanOrEqual(
+    compactPlaylistLayout.sidebarRight - 1,
   )
+  expect(
+    Math.abs(
+      compactPlaylistLayout.contentTop - compactPlaylistLayout.sidebarTop,
+    ),
+  ).toBeLessThanOrEqual(1)
   await page.screenshot({
     path: testInfo.outputPath('playlist-management-desktop.png'),
     fullPage: false,
@@ -343,6 +350,9 @@ test('歌单管理在桌面、平板和手机视口保持可操作', async ({ pa
     expect(scrollMetrics.scrollHeight).toBeGreaterThan(
       scrollMetrics.clientHeight,
     )
+    expect(scrollMetrics.columns).toBe(
+      viewport.width > 1024 || viewport.width <= 680 ? 1 : 2,
+    )
 
     if (viewport.width > 1024) {
       const desktopLayout = await page
@@ -360,17 +370,22 @@ test('歌单管理在桌面、平板和手机视口保持可操作', async ({ pa
           return {
             browserWidth: browserBox.width,
             sidebarWidth: sidebarBox.width,
-            sidebarBottom: sidebarBox.bottom,
+            sidebarTop: sidebarBox.top,
+            sidebarRight: sidebarBox.right,
             contentTop: contentBox.top,
+            contentLeft: contentBox.left,
           }
         })
-      expect(desktopLayout.sidebarWidth).toBeGreaterThanOrEqual(
-        desktopLayout.browserWidth - 1,
+      expect(desktopLayout.sidebarWidth).toBeGreaterThanOrEqual(220)
+      expect(desktopLayout.sidebarWidth).toBeLessThanOrEqual(
+        desktopLayout.browserWidth - 300,
       )
-      expect(desktopLayout.contentTop).toBeGreaterThanOrEqual(
-        desktopLayout.sidebarBottom - 1,
+      expect(desktopLayout.contentLeft).toBeGreaterThanOrEqual(
+        desktopLayout.sidebarRight - 1,
       )
-      expect(scrollMetrics.columns).toBeGreaterThan(1)
+      expect(
+        Math.abs(desktopLayout.contentTop - desktopLayout.sidebarTop),
+      ).toBeLessThanOrEqual(1)
 
       const desktopSidebarWidth = await page
         .locator('.sidebar')

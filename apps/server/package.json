@@ -9,7 +9,7 @@
     "start": "node dist/index.js",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
-    "test:integration": "node -e \"if (!process.env.TEST_DATABASE_URL) throw new Error('TEST_DATABASE_URL is required'); if (process.env.ALLOW_TEST_DATABASE_WRITE !== '1') throw new Error('ALLOW_TEST_DATABASE_WRITE=1 is required')\" && vitest run src/protocol.integration.test.ts",
+    "test:integration": "node -e \"if (!process.env.TEST_DATABASE_URL) throw new Error('TEST_DATABASE_URL is required'); if (process.env.ALLOW_TEST_DATABASE_WRITE !== '1') throw new Error('ALLOW_TEST_DATABASE_WRITE=1 is required')\" && vitest run src/protocol.integration.test.ts src/tools/lxserver-v2-import.integration.test.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

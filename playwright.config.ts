@@ -1,6 +1,15 @@
 import { defineConfig, devices } from '@playwright/test'
 
-const baseURL = process.env.E2E_BASE_URL ?? 'http://127.0.0.1:9527'
+const useMockWebServer = process.env.E2E_MOCK_WEB_SERVER === '1'
+const mockWebServerPort = Number(process.env.E2E_MOCK_PORT ?? '9527')
+if (
+  useMockWebServer &&
+  (!Number.isSafeInteger(mockWebServerPort) || mockWebServerPort < 1)
+)
+  throw new Error('E2E_MOCK_PORT must be a positive integer')
+const baseURL =
+  process.env.E2E_BASE_URL ??
+  `http://127.0.0.1:${useMockWebServer ? mockWebServerPort : 9527}`
 
 export default defineConfig({
   testDir: './tests/e2e',
@@ -35,9 +44,11 @@ export default defineConfig({
     ? {}
     : {
         webServer: {
-          command: 'pnpm --filter @lx-sync/server start',
-          url: `${baseURL}/health/ready`,
-          reuseExistingServer: !process.env.CI,
+          command: useMockWebServer
+            ? `pnpm --filter @lx-sync/web exec vite --host 127.0.0.1 --port ${mockWebServerPort} --strictPort`
+            : 'pnpm --filter @lx-sync/server start',
+          url: useMockWebServer ? baseURL : `${baseURL}/health/ready`,
+          reuseExistingServer: useMockWebServer ? false : !process.env.CI,
           timeout: 60_000,
           gracefulShutdown: {
             signal: 'SIGTERM',

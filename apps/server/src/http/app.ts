@@ -24,7 +24,10 @@ import { AttemptLimiter } from '../sync/auth.js'
 import type { ConnectionRegistry } from '../sync/gateway.js'
 import type { SyncLogger } from '../sync/logging.js'
 import { syncPathForUser } from '../sync/path.js'
-import { PlaylistManagementService } from './playlist-management.js'
+import {
+  isValidManagedSongId,
+  PlaylistManagementService,
+} from './playlist-management.js'
 import { playlistDetailResponse, playlistSummaryResponse } from './playlists.js'
 
 export const sessionCookieName = 'lx_sync_session'
@@ -100,14 +103,13 @@ const updateUserSchema = z
 const credentialSchema = z
   .object({ connectionCode: z.string().min(1) })
   .strict()
-const userParamsSchema = z.object({ userId: z.string().uuid() }).strict()
+const canonicalUserIdSchema = z
+  .string()
+  .uuid()
+  .transform((value) => value.toLowerCase())
+const userParamsSchema = z.object({ userId: canonicalUserIdSchema }).strict()
 const syncUserParamsSchema = z
-  .object({
-    userId: z
-      .string()
-      .uuid()
-      .transform((value) => value.toLowerCase()),
-  })
+  .object({ userId: canonicalUserIdSchema })
   .strict()
 const deviceParamsSchema = userParamsSchema
   .extend({ clientId: z.string().min(1).max(256) })
@@ -131,6 +133,9 @@ const playlistQuerySchema = z
   .object({
     snapshotId: z.string().uuid(),
     q: z.string().max(256).default(''),
+    source: z.enum(['kw', 'kg', 'tx', 'wy', 'mg']).optional(),
+    singer: z.string().trim().max(256).default(''),
+    albumName: z.string().trim().max(256).default(''),
     offset: z.coerce.number().int().min(0).max(10_000).default(0),
     limit: z.coerce.number().int().min(1).max(100).default(50),
   })
@@ -174,6 +179,33 @@ const playlistSongsMutationSchema = z
   .strict()
 const playlistSongTransferSchema = playlistSongsMutationSchema
   .extend({ targetPlaylistId: z.string().min(1).max(2048) })
+  .strict()
+const managedPlaylistSongSchema = z
+  .object({
+    id: z.union([
+      z
+        .string()
+        .min(1)
+        .max(1024)
+        .refine(isValidManagedSongId, 'Invalid platform song ID'),
+      z
+        .number()
+        .int()
+        .safe()
+        .positive()
+        .refine(isValidManagedSongId, 'Invalid platform song ID'),
+    ]),
+    source: z.enum(['kw', 'kg', 'tx', 'wy', 'mg']),
+    name: z.string().trim().min(1).max(256),
+    singer: z.string().trim().min(1).max(256),
+    albumName: z.string().trim().max(256).default(''),
+    interval: z
+      .string()
+      .regex(/^\d{1,3}:[0-5]\d$/)
+      .nullable()
+      .default(null),
+    expectedSnapshotId: z.string().uuid(),
+  })
   .strict()
 const auditQuerySchema = z
   .object({ limit: z.coerce.number().int().min(1).max(200).default(100) })
@@ -679,6 +711,37 @@ export async function buildApp(dependencies: AppDependencies) {
               expectedSnapshotId: body.expectedSnapshotId,
               logger: requestSyncLogger(request),
             })
+          },
+        )
+
+        protectedApi.post(
+          '/users/:userId/playlists/:playlistId/songs',
+          async (request, reply) => {
+            const session = sessionFor(sessions, request)
+            const { userId, playlistId } = playlistParamsSchema.parse(
+              request.params,
+            )
+            const body = managedPlaylistSongSchema.parse(request.body)
+            const result = await playlistManagement.addSong({
+              userId,
+              actor: session.username,
+              playlistId,
+              song: {
+                id: body.id,
+                source: body.source,
+                name: body.name,
+                singer: body.singer,
+                albumName: body.albumName,
+                interval: body.interval,
+              },
+              expectedSnapshotId: body.expectedSnapshotId,
+              logger: requestSyncLogger(request),
+            })
+            reply.header(
+              'Location',
+              `/api/v1/users/${userId}/playlists/${encodeURIComponent(playlistId)}?snapshotId=${result.snapshotId}`,
+            )
+            return reply.status(201).send(result)
           },
         )
 

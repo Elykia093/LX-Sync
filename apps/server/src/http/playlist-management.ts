@@ -68,6 +68,41 @@ export interface PlaylistSongMutationResult extends PlaylistMutationResult {
   affectedSongCount: number
 }
 
+export type ManagedSongSource = 'kw' | 'kg' | 'tx' | 'wy' | 'mg'
+
+export interface ManagedPlaylistSongInput {
+  id: string | number
+  source: ManagedSongSource
+  name: string
+  singer: string
+  albumName: string
+  interval: string | null
+}
+
+const managedSongSources = new Set<ManagedSongSource>([
+  'kw',
+  'kg',
+  'tx',
+  'wy',
+  'mg',
+])
+const managedSongIdPattern = /^[A-Za-z0-9_-]+$/
+const managedSongIdContentPattern = /[A-Za-z0-9]/
+const pseudoSongIdPattern = /^(?:unknown|local|temp|undefined|null)(?:[_-]|$)/i
+const managedIntervalPattern = /^\d{1,3}:[0-5]\d$/
+
+export function isValidManagedSongId(value: unknown): value is string | number {
+  if (typeof value === 'number') return Number.isSafeInteger(value) && value > 0
+  return (
+    typeof value === 'string' &&
+    value.length > 0 &&
+    value.length <= syncLimits.maxIdentifierLength &&
+    managedSongIdPattern.test(value) &&
+    managedSongIdContentPattern.test(value) &&
+    !pseudoSongIdPattern.test(value)
+  )
+}
+
 export class PlaylistManagementService {
   constructor(
     private readonly repository: PlaylistManagementRepository,
@@ -164,6 +199,48 @@ export class PlaylistManagementService {
       },
     })
     return mutationResponse(result.snapshot)
+  }
+
+  async addSong(input: {
+    userId: string
+    actor: string
+    playlistId: string
+    song: ManagedPlaylistSongInput
+    expectedSnapshotId: string
+    logger?: SyncLogger
+  }): Promise<PlaylistSongMutationResult> {
+    assertManagedPlaylistSong(input.song)
+    const result = await this.mutate({
+      ...input,
+      auditAction: 'playlist.songs.add',
+      build: ({ head, user }) => {
+        const playlist = resolveWritableUserPlaylist(
+          head.data,
+          input.playlistId,
+        )
+        assertWireAddressablePlaylist(playlist)
+        if (playlist.songs.some((song) => song.id === input.song.id))
+          throw new AppError(
+            409,
+            'SONG_ALREADY_EXISTS',
+            'Song already exists in the target playlist',
+          )
+        assertCanAddSong(head.data)
+        const musicInfo = managedMusicInfo(input.song)
+        return {
+          action: {
+            action: 'list_music_add',
+            data: {
+              id: playlist.wireId,
+              musicInfos: [musicInfo],
+              addMusicLocationType: user.addMusicLocationType,
+            },
+          },
+          affectedSongCount: 1,
+        }
+      },
+    })
+    return songMutationResponse(result.snapshot, result.affectedSongCount)
   }
 
   async removeSongs(input: {
@@ -454,6 +531,54 @@ function requireDifferentPlaylists(
 
 function assertCanCreatePlaylist(data: ListData): void {
   if (data.userList.length >= syncLimits.maxUserLists)
+    throw new AppError(
+      409,
+      'PLAYLIST_CAPACITY_EXCEEDED',
+      'Playlist capacity limit would be exceeded',
+    )
+}
+
+function assertManagedPlaylistSong(song: ManagedPlaylistSongInput): void {
+  if (
+    !isValidManagedSongId(song.id) ||
+    !managedSongSources.has(song.source) ||
+    song.name.trim().length === 0 ||
+    song.name.length > 256 ||
+    song.singer.trim().length === 0 ||
+    song.singer.length > 256 ||
+    song.albumName.length > 256 ||
+    (song.interval !== null && !managedIntervalPattern.test(song.interval))
+  )
+    throw new AppError(400, 'VALIDATION_FAILED', 'Invalid platform song')
+}
+
+function managedMusicInfo(song: ManagedPlaylistSongInput): MusicInfo {
+  return {
+    id: song.id,
+    name: song.name,
+    singer: song.singer,
+    source: song.source,
+    interval: song.interval,
+    songmid: song.id,
+    albumName: song.albumName,
+    types: [],
+    _types: {},
+    typeUrl: {},
+    meta: {
+      songId: song.id,
+      albumName: song.albumName,
+      qualitys: [],
+      _qualitys: {},
+    },
+  }
+}
+
+function assertCanAddSong(data: ListData): void {
+  const currentSongCount =
+    data.defaultList.length +
+    data.loveList.length +
+    data.userList.reduce((total, playlist) => total + playlist.list.length, 0)
+  if (currentSongCount >= syncLimits.maxTracks)
     throw new AppError(
       409,
       'PLAYLIST_CAPACITY_EXCEEDED',

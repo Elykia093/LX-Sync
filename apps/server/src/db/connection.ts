@@ -19,12 +19,22 @@ export function createDatabase(connectionString: string): Kysely<Database> {
   })
 }
 
-export async function migrateToLatest(db: Kysely<Database>): Promise<void> {
+interface MigrationOptions {
+  readonly migrationTableSchema?: string
+}
+
+export async function migrateToLatest(
+  db: Kysely<Database>,
+  options: MigrationOptions = {},
+): Promise<void> {
   const migrationFolder = fileURLToPath(
     new URL('./migrations', import.meta.url),
   )
   const migrator = new Migrator({
     db,
+    ...(options.migrationTableSchema
+      ? { migrationTableSchema: options.migrationTableSchema }
+      : {}),
     provider: new FileMigrationProvider({
       fs,
       path,

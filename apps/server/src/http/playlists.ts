@@ -39,7 +39,14 @@ export function playlistSummaryResponse(head: SnapshotRecord<ListData>) {
 export function playlistDetailResponse(
   head: SnapshotRecord<ListData>,
   playlistId: string,
-  query: { q: string; offset: number; limit: number },
+  query: {
+    q: string
+    source?: string | undefined
+    singer?: string
+    albumName?: string
+    offset: number
+    limit: number
+  },
 ) {
   const record = playlistRecords(head.data).find(
     (playlist) => playlist.id === playlistId,
@@ -47,16 +54,25 @@ export function playlistDetailResponse(
   if (!record) return null
 
   const normalizedQuery = query.q.trim().toLocaleLowerCase()
+  const normalizedSinger = query.singer?.trim().toLocaleLowerCase() ?? ''
+  const normalizedAlbumName = query.albumName?.trim().toLocaleLowerCase() ?? ''
   const songs = record.songs
     .map(normalizeSong)
     .filter(
       (song) =>
-        normalizedQuery === '' ||
-        [song.id, song.name, song.singer, song.albumName, song.source].some(
-          (value) =>
-            value !== null &&
-            String(value).toLocaleLowerCase().includes(normalizedQuery),
-        ),
+        (normalizedQuery === '' ||
+          [song.id, song.name, song.singer, song.albumName, song.source].some(
+            (value) =>
+              value !== null &&
+              String(value).toLocaleLowerCase().includes(normalizedQuery),
+          )) &&
+        (query.source === undefined || song.source === query.source) &&
+        (normalizedSinger === '' ||
+          song.singer?.toLocaleLowerCase().includes(normalizedSinger) ===
+            true) &&
+        (normalizedAlbumName === '' ||
+          song.albumName?.toLocaleLowerCase().includes(normalizedAlbumName) ===
+            true),
     )
 
   const { songs: _songs, wireId: _wireId, ...playlist } = record
@@ -113,7 +129,8 @@ function normalizeSong(song: MusicInfo, index: number): PlaylistSong {
     position: index + 1,
     name: optionalString(song.name),
     singer: optionalString(song.singer),
-    albumName: optionalString(meta?.albumName),
+    albumName:
+      optionalString(meta?.albumName) ?? optionalString(song.albumName),
     source: optionalString(song.source),
     interval: optionalString(song.interval),
   }

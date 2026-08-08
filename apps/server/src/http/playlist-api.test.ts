@@ -21,7 +21,7 @@ const config = {
   LOG_LEVEL: 'silent',
 } satisfies AppConfig
 
-const userId = '00000000-0000-4000-8000-000000000010'
+const userId = 'aaaaaaaa-0000-4000-8000-000000000010'
 const initialSnapshotId = '00000000-0000-4000-8000-000000000011'
 const apps: Array<Awaited<ReturnType<typeof buildApp>>> = []
 
@@ -63,6 +63,9 @@ async function createFixture(
   snapshots.set(head.id, head)
   let saves = 0
   const audits: AuditEventInput[] = []
+  const repositoryUserIds: string[] = []
+  const exclusiveUserIds: string[] = []
+  const broadcastUserIds: string[] = []
 
   async function saveSnapshot(input: {
     userId: string
@@ -87,6 +90,7 @@ async function createFixture(
   }): Promise<SnapshotRecord> {
     if (input.domain !== 'list' || typeof input.data === 'string')
       throw new Error('Unexpected dislike write')
+    repositoryUserIds.push(input.userId)
     if (input.expectedSnapshotId !== head.id) throw new SnapshotConflictError()
     saves += 1
     head = listSnapshot(
@@ -134,8 +138,9 @@ async function createFixture(
     },
     listUsers: async () => [],
     createUser: async () => ({ id: userId, name: 'User' }),
-    getUserSummary: async (requestedUserId) =>
-      requestedUserId === userId
+    getUserSummary: async (requestedUserId) => {
+      repositoryUserIds.push(requestedUserId)
+      return requestedUserId === userId
         ? {
             id: userId,
             name: 'User',
@@ -145,11 +150,15 @@ async function createFixture(
             deviceCount: 0,
             createdAt: new Date('2026-07-23T04:00:00.000Z'),
           }
-        : null,
+        : null
+    },
     updateUser: async () => false,
     listDevices: async () => [],
     revokeDevice: async () => false,
-    getHead: async () => head,
+    getHead: async (_domain, requestedUserId) => {
+      repositoryUserIds.push(requestedUserId)
+      return head
+    },
     saveSnapshot,
     markDeviceSnapshot: async () => {},
     listSnapshots: async () => [],
@@ -167,8 +176,14 @@ async function createFixture(
       count: () => 0,
       closeUser: async () => {},
       closeDevice: async () => {},
-      forUser: () => [],
-      runExclusive: (_requestedUserId, task) => task(),
+      forUser: (requestedUserId) => {
+        broadcastUserIds.push(requestedUserId)
+        return []
+      },
+      runExclusive: (requestedUserId, task) => {
+        exclusiveUserIds.push(requestedUserId)
+        return task()
+      },
     },
     serverId: 'server-id',
     startedAt: new Date('2026-07-23T04:00:00.000Z'),
@@ -188,12 +203,34 @@ async function createFixture(
     app,
     cookie: setCookie.split(';')[0],
     audits,
+    repositoryUserIds,
+    exclusiveUserIds,
+    broadcastUserIds,
     getHead: () => head,
     getSaveCount: () => saves,
   }
 }
 
 describe('playlist management HTTP API', () => {
+  it('canonicalizes uppercase user UUIDs before writes and broadcasts', async () => {
+    const fixture = await createFixture()
+    const response = await fixture.app.inject({
+      method: 'POST',
+      url: `/api/v1/users/${userId.toUpperCase()}/playlists`,
+      headers: { cookie: fixture.cookie, origin: config.PUBLIC_ORIGIN },
+      payload: {
+        name: 'Canonical user',
+        expectedSnapshotId: initialSnapshotId,
+      },
+    })
+
+    expect(response.statusCode).toBe(201)
+    expect(response.headers.location).toContain(`/api/v1/users/${userId}/`)
+    expect(fixture.exclusiveUserIds).toEqual([userId])
+    expect(fixture.repositoryUserIds).toEqual([userId, userId, userId])
+    expect(fixture.broadcastUserIds).toEqual([userId])
+  })
+
   it('binds song details to the requested immutable snapshot', async () => {
     const fixture = await createFixture()
     const missingSnapshot = await fixture.app.inject({
@@ -216,6 +253,55 @@ describe('playlist management HTTP API', () => {
       data: [{ id: 2, position: 1, name: 'Numeric song' }],
     })
     expect(response.body).not.toContain('privateField')
+  })
+
+  it('validates and combines playlist-scoped song filters', async () => {
+    const fixture = await createFixture({
+      defaultList: [
+        {
+          id: 'match',
+          name: 'Filtered song',
+          singer: 'Target Artist',
+          source: 'wy',
+          meta: { albumName: 'Target Album' },
+        },
+        {
+          id: 'other-source',
+          name: 'Filtered song',
+          singer: 'Target Artist',
+          source: 'tx',
+          meta: { albumName: 'Target Album' },
+        },
+      ],
+      loveList: [],
+      userList: [],
+    })
+    const response = await fixture.app.inject({
+      method: 'GET',
+      url: `/api/v1/users/${userId}/playlists/default?snapshotId=${initialSnapshotId}&q=filtered&source=wy&singer=target&albumName=album&offset=0&limit=25`,
+      headers: { cookie: fixture.cookie },
+    })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({
+      total: 1,
+      data: [{ id: 'match', position: 1, source: 'wy' }],
+    })
+
+    const invalidSource = await fixture.app.inject({
+      method: 'GET',
+      url: `/api/v1/users/${userId}/playlists/default?snapshotId=${initialSnapshotId}&source=local`,
+      headers: { cookie: fixture.cookie },
+    })
+    expect(invalidSource.statusCode).toBe(400)
+    expect(invalidSource.json().code).toBe('VALIDATION_FAILED')
+
+    const unknownFilter = await fixture.app.inject({
+      method: 'GET',
+      url: `/api/v1/users/${userId}/playlists/default?snapshotId=${initialSnapshotId}&artist=target`,
+      headers: { cookie: fixture.cookie },
+    })
+    expect(unknownFilter.statusCode).toBe(400)
+    expect(unknownFilter.json().code).toBe('VALIDATION_FAILED')
   })
 
   it('routes playlist IDs across the full LX identifier length boundary', async () => {
@@ -280,6 +366,105 @@ describe('playlist management HTTP API', () => {
       }),
     ])
     expect(JSON.stringify(fixture.audits)).not.toContain('Road trip')
+  })
+
+  it('adds a strictly validated platform song to a user playlist', async () => {
+    const fixture = await createFixture({
+      defaultList: [],
+      loveList: [],
+      userList: [
+        {
+          id: 'target',
+          name: 'Target',
+          locationUpdateTime: null,
+          list: [],
+        },
+      ],
+    })
+    const headers = { cookie: fixture.cookie, origin: config.PUBLIC_ORIGIN }
+    const response = await fixture.app.inject({
+      method: 'POST',
+      url: `/api/v1/users/${userId}/playlists/user%3Atarget/songs`,
+      headers,
+      payload: {
+        id: 123456,
+        source: 'wy',
+        name: 'Added song',
+        singer: 'Added singer',
+        albumName: 'Added album',
+        interval: '04:12',
+        expectedSnapshotId: initialSnapshotId,
+      },
+    })
+
+    expect(response.statusCode).toBe(201)
+    expect(response.headers.location).toContain(
+      `/api/v1/users/${userId}/playlists/user%3Atarget`,
+    )
+    expect(response.json()).toMatchObject({ affectedSongCount: 1 })
+    expect(fixture.getHead().data.userList[0]?.list[0]).toMatchObject({
+      id: 123456,
+      source: 'wy',
+      meta: { songId: 123456, albumName: 'Added album' },
+    })
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({
+        action: 'playlist.songs.add',
+        metadata: {
+          domain: 'list',
+          affectedPlaylistCount: 1,
+          affectedSongCount: 1,
+        },
+      }),
+    ])
+    expect(JSON.stringify(fixture.audits)).not.toContain('Added song')
+
+    for (const invalidPayload of [
+      {
+        id: 'unknown_track',
+        source: 'wy',
+        name: 'Invalid ID',
+        singer: 'Singer',
+      },
+      {
+        id: 'track.mp3',
+        source: 'wy',
+        name: 'Filename fallback',
+        singer: 'Singer',
+      },
+      {
+        id: '---',
+        source: 'wy',
+        name: 'Separator-only ID',
+        singer: 'Singer',
+      },
+      {
+        id: 'valid-id',
+        source: 'local',
+        name: 'Invalid source',
+        singer: 'Singer',
+      },
+      {
+        id: 'valid-id',
+        source: 'wy',
+        name: 'Unknown field',
+        singer: 'Singer',
+        metadata: { injected: true },
+      },
+    ]) {
+      const rejected = await fixture.app.inject({
+        method: 'POST',
+        url: `/api/v1/users/${userId}/playlists/user%3Atarget/songs`,
+        headers,
+        payload: {
+          ...invalidPayload,
+          expectedSnapshotId: fixture.getHead().id,
+        },
+      })
+      expect(rejected.statusCode).toBe(400)
+      expect(rejected.json().code).toBe('VALIDATION_FAILED')
+    }
+    expect(fixture.getSaveCount()).toBe(1)
   })
 
   it('routes rename, copy, remove, move, and delete mutations through successive snapshots', async () => {

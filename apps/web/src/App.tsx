@@ -28,6 +28,7 @@ import {
   ScrollText,
   Search,
   Server,
+  Settings2,
   Trash2,
   UsersRound,
   X,
@@ -43,7 +44,6 @@ import {
 import {
   Link,
   Navigate,
-  NavLink,
   Route,
   Routes,
   useLocation,
@@ -280,10 +280,28 @@ function AppShell({
     onSuccess: () => applyLoggedOutState(queryClient),
   })
   const routeTitle = location.pathname.startsWith('/users/')
-    ? '用户详情'
+    ? ({
+        '#user-settings': '用户设置',
+        '#user-devices': '设备管理',
+        '#user-playlists': '歌单管理',
+        '#user-snapshots': '快照历史',
+      }[location.hash] ?? '用户详情')
     : location.pathname === '/audit'
       ? '审计记录'
-      : '概览'
+      : ({
+          '#service-overview': '服务概况',
+          '#users': '同步用户',
+          '#new-user': '新增用户',
+        }[location.hash] ?? '概览')
+  const isUserRoute = location.pathname.startsWith('/users/')
+
+  const navigateFromSidebar = (targetId?: string) => {
+    setSidebarOpen(false)
+    if (targetId && location.hash === `#${targetId}`)
+      requestAnimationFrame(() =>
+        document.getElementById(targetId)?.scrollIntoView({ block: 'start' }),
+      )
+  }
 
   const closeSidebar = () => {
     setSidebarOpen(false)
@@ -439,27 +457,105 @@ function AppShell({
           <X aria-hidden="true" size={19} />
         </button>
         <nav aria-label="主导航">
-          <NavLink
-            to="/"
-            end
-            onClick={() => setSidebarOpen(false)}
-            className={({ isActive }) =>
-              isActive || location.pathname.startsWith('/users/')
-                ? 'nav-link active'
-                : 'nav-link'
-            }
-          >
-            <LayoutDashboard aria-hidden="true" size={18} />
-            <span>仪表盘</span>
-          </NavLink>
-          <NavLink
-            className="nav-link"
-            to="/audit"
-            onClick={() => setSidebarOpen(false)}
-          >
-            <ScrollText aria-hidden="true" size={18} />
-            <span>审计记录</span>
-          </NavLink>
+          <div className="nav-section">
+            <span className="nav-section-label">概览</span>
+            <div className="nav-section-items">
+              <SidebarNavLink
+                to="/"
+                label="仪表盘"
+                icon={LayoutDashboard}
+                active={location.pathname === '/' && location.hash === ''}
+                onNavigate={() => navigateFromSidebar()}
+              />
+            </div>
+          </div>
+          <div className="nav-section">
+            <span className="nav-section-label">同步管理</span>
+            <div className="nav-section-items">
+              <SidebarNavLink
+                to="/#service-overview"
+                label="服务概况"
+                icon={Activity}
+                active={
+                  location.pathname === '/' &&
+                  location.hash === '#service-overview'
+                }
+                onNavigate={() => navigateFromSidebar('service-overview')}
+                secondary
+              />
+              <SidebarNavLink
+                to="/#users"
+                label="同步用户"
+                icon={UsersRound}
+                active={location.pathname === '/' && location.hash === '#users'}
+                onNavigate={() => navigateFromSidebar('users')}
+                secondary
+              />
+              <SidebarNavLink
+                to="/#new-user"
+                label="新增用户"
+                icon={Plus}
+                active={
+                  location.pathname === '/' && location.hash === '#new-user'
+                }
+                onNavigate={() => navigateFromSidebar('new-user')}
+                secondary
+              />
+            </div>
+          </div>
+          {isUserRoute && (
+            <div className="nav-section nav-section-context">
+              <span className="nav-section-label">当前用户</span>
+              <div className="nav-section-items">
+                <SidebarNavLink
+                  to={`${location.pathname}#user-settings`}
+                  label="用户设置"
+                  icon={Settings2}
+                  active={
+                    location.hash === '' || location.hash === '#user-settings'
+                  }
+                  onNavigate={() => navigateFromSidebar('user-settings')}
+                  secondary
+                />
+                <SidebarNavLink
+                  to={`${location.pathname}#user-devices`}
+                  label="设备管理"
+                  icon={Monitor}
+                  active={location.hash === '#user-devices'}
+                  onNavigate={() => navigateFromSidebar('user-devices')}
+                  secondary
+                />
+                <SidebarNavLink
+                  to={`${location.pathname}#user-playlists`}
+                  label="歌单管理"
+                  icon={ListMusic}
+                  active={location.hash === '#user-playlists'}
+                  onNavigate={() => navigateFromSidebar('user-playlists')}
+                  secondary
+                />
+                <SidebarNavLink
+                  to={`${location.pathname}#user-snapshots`}
+                  label="快照历史"
+                  icon={Clock3}
+                  active={location.hash === '#user-snapshots'}
+                  onNavigate={() => navigateFromSidebar('user-snapshots')}
+                  secondary
+                />
+              </div>
+            </div>
+          )}
+          <div className="nav-section">
+            <span className="nav-section-label">系统</span>
+            <div className="nav-section-items">
+              <SidebarNavLink
+                to="/audit"
+                label="审计记录"
+                icon={ScrollText}
+                active={location.pathname === '/audit'}
+                onNavigate={() => navigateFromSidebar()}
+              />
+            </div>
+          </div>
         </nav>
         <div className="sidebar-footer">
           <div className="sidebar-profile">
@@ -506,6 +602,34 @@ function AppShell({
         <main className="content">{children}</main>
       </section>
     </div>
+  )
+}
+
+function SidebarNavLink({
+  to,
+  label,
+  icon: Icon,
+  active,
+  secondary = false,
+  onNavigate,
+}: {
+  to: string
+  label: string
+  icon: LucideIcon
+  active: boolean
+  secondary?: boolean
+  onNavigate(): void
+}) {
+  return (
+    <Link
+      className={`nav-link${secondary ? ' secondary' : ''}${active ? ' active' : ''}`}
+      to={to}
+      aria-current={active ? (secondary ? 'location' : 'page') : undefined}
+      onClick={onNavigate}
+    >
+      <Icon aria-hidden="true" size={secondary ? 17 : 18} />
+      <span>{label}</span>
+    </Link>
   )
 }
 
@@ -565,7 +689,7 @@ function Dashboard({ username }: { username: string }) {
       </section>
       <PageHeader title="仪表盘" description={`欢迎回来，${username}`} />
 
-      <div className="dashboard-overview">
+      <div className="dashboard-overview" id="service-overview">
         <section className="panel dashboard-account-card">
           <div className="panel-heading">
             <div>
@@ -793,7 +917,7 @@ function UserDetailContent({ user }: { user: SyncUser }) {
         description={`创建于 ${formatDate(user.createdAt)} · ${user.deviceCount} 台有效设备`}
         back
       />
-      <div className="two-column">
+      <div className="two-column" id="user-settings">
         <section className="panel">
           <p className="eyebrow">SETTINGS</p>
           <h2>同步设置</h2>
@@ -864,7 +988,7 @@ function UserDetailContent({ user }: { user: SyncUser }) {
         </section>
       </div>
 
-      <section className="panel section-gap">
+      <section className="panel section-gap" id="user-devices">
         <div className="panel-heading">
           <div>
             <p className="eyebrow">DEVICES</p>
@@ -916,7 +1040,7 @@ function UserDetailContent({ user }: { user: SyncUser }) {
 
       <PlaylistManager userId={user.id} />
 
-      <div className="two-column section-gap">
+      <div className="two-column section-gap" id="user-snapshots">
         <SnapshotPanel userId={user.id} domain="list" title="歌单快照" />
         <SnapshotPanel
           userId={user.id}
@@ -1446,7 +1570,7 @@ function PlaylistManager({ userId }: { userId: string }) {
   const detailPlaylist = songs.data?.playlist ?? activePlaylist
 
   return (
-    <section className="panel section-gap playlist-manager">
+    <section className="panel section-gap playlist-manager" id="user-playlists">
       <div className="panel-heading playlist-manager-heading">
         <div>
           <p className="eyebrow">PLAYLISTS</p>

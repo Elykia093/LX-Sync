@@ -5,7 +5,7 @@
 > [!IMPORTANT]
 > 本项目是非官方实现，与 LX Music / 洛雪音乐助手及其作者没有隶属或背书关系。当前状态为 **Alpha**，请先在非关键数据上验证，并建立可恢复备份。
 
-当前版本说明：[LX-Sync v0.2.0](docs/releases/v0.2.0.md)。
+当前版本说明：[LX-Sync v0.3.0](docs/releases/v0.3.0.md)。
 
 ## 能做什么
 

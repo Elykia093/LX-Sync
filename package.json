@@ -1,6 +1,6 @@
 {
   "name": "lx-sync",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "A self-hosted LX Music sync service with PostgreSQL persistence.",
   "license": "Apache-2.0",

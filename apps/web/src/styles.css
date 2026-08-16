@@ -718,7 +718,12 @@ button.secondary {
 }
 
 #users,
-#new-user {
+#new-user,
+#service-overview,
+#user-settings,
+#user-devices,
+#user-playlists,
+#user-snapshots {
   scroll-margin-top: 24px;
 }
 
@@ -1652,7 +1657,12 @@ td.actions {
   }
 
   #users,
-  #new-user {
+  #new-user,
+  #service-overview,
+  #user-settings,
+  #user-devices,
+  #user-playlists,
+  #user-snapshots {
     scroll-margin-top: 84px;
   }
 }
@@ -2038,8 +2048,35 @@ td.actions {
 .sidebar nav {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 12px;
   padding: 16px;
+}
+
+.nav-section {
+  display: grid;
+  gap: 4px;
+}
+
+.nav-section + .nav-section {
+  padding-top: 12px;
+  border-top: 1px solid
+    color-mix(in srgb, var(--border-default) 62%, transparent);
+}
+
+.nav-section-label {
+  display: flex;
+  min-height: 20px;
+  align-items: center;
+  padding: 0 12px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0;
+}
+
+.nav-section-items {
+  display: grid;
+  gap: 3px;
 }
 
 .nav-link {
@@ -2065,6 +2102,16 @@ td.actions {
 .nav-link.active {
   color: var(--brand-on-primary);
   background: var(--brand-primary);
+}
+
+.nav-link.secondary {
+  min-height: 40px;
+  padding: 7px 12px;
+  font-size: 13px;
+}
+
+.nav-section-context {
+  padding-bottom: 2px;
 }
 
 .sidebar-footer {

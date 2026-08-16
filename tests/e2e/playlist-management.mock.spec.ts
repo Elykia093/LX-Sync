@@ -263,6 +263,64 @@ test('管理员可创建、改名、删除歌单并批量复制、移动、移�
   ).toHaveLength(4)
 })
 
+test('侧栏分组展示二级入口并定位现有管理区域', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await installMockApi(page, 4)
+  const browserErrors = collectBrowserErrors(page)
+
+  await page.goto('/')
+  const navigation = page.getByRole('navigation', { name: '主导航' })
+  await expect(navigation.getByText('同步管理', { exact: true })).toBeVisible()
+  await expect(navigation.getByRole('link', { name: '服务概况' })).toBeVisible()
+  await expect(navigation.getByRole('link', { name: '同步用户' })).toBeVisible()
+  await expect(navigation.getByRole('link', { name: '新增用户' })).toBeVisible()
+
+  await navigation.getByRole('link', { name: '同步用户' }).click()
+  await expect(page).toHaveURL(/#users$/)
+  await expect(
+    navigation.getByRole('link', { name: '同步用户' }),
+  ).toHaveAttribute('aria-current', 'location')
+  await expect(page.locator('#users')).toBeInViewport()
+
+  await page.goto(`/users/${userId}`)
+  await expect(navigation.getByText('当前用户', { exact: true })).toBeVisible()
+  for (const label of ['用户设置', '设备管理', '歌单管理', '快照历史'])
+    await expect(navigation.getByRole('link', { name: label })).toBeVisible()
+
+  await navigation.getByRole('link', { name: '歌单管理' }).click()
+  await expect(page).toHaveURL(/#user-playlists$/)
+  await expect(
+    navigation.getByRole('link', { name: '歌单管理' }),
+  ).toHaveAttribute('aria-current', 'location')
+  await expect(page.locator('#user-playlists')).toBeInViewport()
+  await page.screenshot({
+    path: testInfo.outputPath('sidebar-secondary-navigation-1440x900.png'),
+    fullPage: false,
+    animations: 'disabled',
+  })
+
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto(`/users/${userId}`)
+  await page.getByRole('button', { name: '打开导航' }).click()
+  await expect(navigation.getByRole('link', { name: '设备管理' })).toBeVisible()
+  await page.screenshot({
+    path: testInfo.outputPath('sidebar-secondary-navigation-open-390x844.png'),
+    fullPage: false,
+    animations: 'disabled',
+  })
+  await navigation.getByRole('link', { name: '设备管理' }).click()
+  await expect(page).toHaveURL(/#user-devices$/)
+  await expect(page.locator('.sidebar')).not.toHaveClass(/open/)
+  await expect(page.locator('#user-devices')).toBeInViewport()
+  await page.screenshot({
+    path: testInfo.outputPath('sidebar-secondary-navigation-390x844.png'),
+    fullPage: false,
+    animations: 'disabled',
+  })
+
+  expect(browserErrors).toEqual([])
+})
+
 test('歌单管理在桌面、平板和手机视口保持可操作', async ({ page }, testInfo) => {
   const state = await installMockApi(page, 18)
   const browserErrors = collectBrowserErrors(page)

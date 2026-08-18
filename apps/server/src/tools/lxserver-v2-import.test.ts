@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import type { ListData } from '../protocol/index.js'
 import { md5 } from '../security/crypto.js'
 import {
+  buildLxMusicSyncServerImportPlan,
   buildLxserverV2ImportPlan,
   ImportValidationError,
 } from './lxserver-v2-import.js'
@@ -140,6 +141,199 @@ describe('lxserver v2 import planning', () => {
   })
 })
 
+describe('lx-music-sync-server import planning', () => {
+  it('combines the official data directory with a validated JSON config', async () => {
+    const fixture = await createSourceFixture()
+    await rm(path.join(fixture.source, 'users.json'))
+    const configPath = path.join(fixture.source, 'official-config.json')
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        serverName: 'Official source',
+        'proxy.enabled': false,
+        'proxy.header': 'x-real-ip',
+        maxSnapshotNum: 14,
+        'list.addMusicLocationType': 'top',
+        users: [
+          {
+            name: fixture.userName,
+            password: fixture.connectionCode,
+          },
+        ],
+      }),
+    )
+
+    const plan = await buildLxMusicSyncServerImportPlan(
+      fixture.source,
+      configPath,
+      { maxSnapshots: 10, addMusicLocationType: 'bottom' },
+    )
+
+    expect(plan.sourceFormat).toBe('lx-music-sync-server-v2')
+    expect(plan.summary).toEqual({
+      sourceVersion: 2,
+      users: 1,
+      devices: 1,
+      sourceSnapshots: 2,
+      storedSnapshots: 2,
+      baselines: 2,
+      listHeadItems: 2,
+      dislikeHeadItems: 1,
+      orphanUserDirectories: 0,
+    })
+    expect(plan.users[0]?.maxSnapshots).toBe(14)
+    expect(plan.users[0]?.addMusicLocationType).toBe('top')
+    const publicEvidence = JSON.stringify(plan.summary)
+    for (const secret of [
+      fixture.userName,
+      fixture.connectionCode,
+      fixture.clientId,
+      fixture.deviceKey,
+      fixture.serverId,
+      fixture.songName,
+    ])
+      expect(publicEvidence).not.toContain(secret)
+  })
+
+  it('rejects executable config.js input instead of evaluating it', async () => {
+    const fixture = await createSourceFixture()
+    const configPath = path.join(fixture.source, 'config.js')
+    await writeFile(
+      configPath,
+      `module.exports = { users: [{ name: '${fixture.userName}', password: '${fixture.connectionCode}' }] }`,
+    )
+
+    await expect(
+      buildLxMusicSyncServerImportPlan(fixture.source, configPath, {
+        maxSnapshots: 10,
+        addMusicLocationType: 'top',
+      }),
+    ).rejects.toBeInstanceOf(ImportValidationError)
+  })
+
+  it('rejects official user directories that are missing from the JSON config', async () => {
+    const fixture = await createSourceFixture()
+    const configPath = await writeOfficialConfig(
+      fixture.source,
+      fixture.userName,
+      fixture.connectionCode,
+    )
+    await mkdir(path.join(fixture.source, 'users', 'unmapped-user-directory'))
+
+    await expect(
+      buildLxMusicSyncServerImportPlan(fixture.source, configPath, {
+        maxSnapshots: 10,
+        addMusicLocationType: 'top',
+      }),
+    ).rejects.toBeInstanceOf(ImportValidationError)
+  })
+
+  it('accepts legacy devices that have no migrated list baseline', async () => {
+    const fixture = await createSourceFixture()
+    const configPath = await writeOfficialConfig(
+      fixture.source,
+      fixture.userName,
+      fixture.connectionCode,
+    )
+    await writeFile(
+      fixture.listInfoPath,
+      JSON.stringify({
+        latest: fixture.listKey,
+        time: Date.parse('2026-07-20T10:00:00.000Z'),
+        list: [],
+        clients: { [fixture.clientId]: {} },
+      }),
+    )
+
+    const plan = await buildLxMusicSyncServerImportPlan(
+      fixture.source,
+      configPath,
+      { maxSnapshots: 10, addMusicLocationType: 'top' },
+    )
+
+    expect(plan.summary.baselines).toBe(1)
+  })
+
+  it('preserves the configured snapshot limit when more files exist', async () => {
+    const fixture = await createSourceFixture()
+    const configPath = await writeOfficialConfig(
+      fixture.source,
+      fixture.userName,
+      fixture.connectionCode,
+      1,
+    )
+    const previousPayload = JSON.stringify({
+      defaultList: [{ id: 'previous-song' }],
+      loveList: [],
+      userList: [],
+    })
+    const previousKey = md5(previousPayload)
+    await writeFile(
+      path.join(fixture.listSnapshotDirectory, `snapshot_${previousKey}`),
+      previousPayload,
+    )
+    await writeFile(
+      fixture.listInfoPath,
+      JSON.stringify({
+        latest: fixture.listKey,
+        time: Date.parse('2026-07-20T10:00:00.000Z'),
+        list: [previousKey],
+        clients: {
+          [fixture.clientId]: {
+            snapshotKey: fixture.listKey,
+            lastSyncDate: Date.parse('2026-07-20T10:00:00.000Z'),
+          },
+        },
+      }),
+    )
+
+    const plan = await buildLxMusicSyncServerImportPlan(
+      fixture.source,
+      configPath,
+      { maxSnapshots: 10, addMusicLocationType: 'top' },
+    )
+
+    expect(plan.users[0]?.maxSnapshots).toBe(1)
+    expect(plan.summary.sourceSnapshots).toBe(3)
+  })
+
+  it('rejects an official playlist above the LX-Sync track limit', async () => {
+    const fixture = await createSourceFixture()
+    const configPath = await writeOfficialConfig(
+      fixture.source,
+      fixture.userName,
+      fixture.connectionCode,
+    )
+    const oversizedPayload = JSON.stringify({
+      defaultList: Array.from({ length: 10_001 }, (_, id) => ({ id })),
+      loveList: [],
+      userList: [],
+    })
+    const oversizedKey = md5(oversizedPayload)
+    await rm(fixture.listSnapshotPath)
+    await writeFile(
+      path.join(fixture.listSnapshotDirectory, `snapshot_${oversizedKey}`),
+      oversizedPayload,
+    )
+    await writeFile(
+      fixture.listInfoPath,
+      JSON.stringify({
+        latest: oversizedKey,
+        time: Date.parse('2026-07-20T10:00:00.000Z'),
+        list: [],
+        clients: {},
+      }),
+    )
+
+    await expect(
+      buildLxMusicSyncServerImportPlan(fixture.source, configPath, {
+        maxSnapshots: 10,
+        addMusicLocationType: 'top',
+      }),
+    ).rejects.toBeInstanceOf(ImportValidationError)
+  })
+})
+
 async function createSourceFixture() {
   const source = await mkdtemp(path.join(os.tmpdir(), 'lx-sync-import-'))
   temporaryDirectories.push(source)
@@ -214,9 +408,10 @@ async function createSourceFixture() {
     listSnapshotDirectory,
     `snapshot_${listKey}`,
   )
+  const listInfoPath = path.join(userDirectory, 'list', 'snapshotInfo.json')
   await writeFile(listSnapshotPath, listPayload)
   await writeFile(
-    path.join(userDirectory, 'list', 'snapshotInfo.json'),
+    listInfoPath,
     JSON.stringify({
       latest: listKey,
       time: Date.parse('2026-07-20T10:00:00.000Z'),
@@ -261,10 +456,31 @@ async function createSourceFixture() {
     clientId,
     deviceKey,
     songName,
+    listKey,
+    listInfoPath,
     listSnapshotPath,
+    listSnapshotDirectory,
     dislikeSnapshotPath,
     dislikeInfoPath,
   }
+}
+
+async function writeOfficialConfig(
+  source: string,
+  userName: string,
+  password: string,
+  maxSnapshotNum = 10,
+): Promise<string> {
+  const configPath = path.join(source, 'official-config.json')
+  await writeFile(
+    configPath,
+    JSON.stringify({
+      maxSnapshotNum,
+      'list.addMusicLocationType': 'top',
+      users: [{ name: userName, password }],
+    }),
+  )
+  return configPath
 }
 
 function sourceUserDirectoryName(userName: string): string {

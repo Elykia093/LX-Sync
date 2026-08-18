@@ -6,14 +6,14 @@
 
 LX-Sync 是面向 LX Music 的自托管同步服务，兼容 LX Music v4 的 HTTP 握手和 WebSocket 同步流程。它保存歌单与“不喜欢”规则，提供多设备合并、有限历史快照、设备撤销、快照恢复、审计记录和同源 React 管理端。
 
-- 当前项目版本：`0.3.0`。
+- 当前项目版本：`0.4.0`。
 - 当前阶段：SemVer `0.x.y` 初始开发阶段，README 标记为 Alpha。
 - 部署模型：单实例模块化单体。
 - 持久化事实源：PostgreSQL。
 - 管理端：同源 React SPA，不是公开或跨域管理 API。
 - 明确不在当前范围：Redis、多实例广播、消息队列、分布式锁、SSO/RBAC、SSR、移动端应用和 Kubernetes Chart。
 
-当前 `0.3.0` 是合法 SemVer，不因新增规范而删除、重置或自动提升。
+当前 `0.4.0` 是向后兼容功能发布，不改变 LX v4 wire format、管理 API 或 PostgreSQL schema。
 
 ## 2. 文档分工与证据优先级
 
@@ -164,6 +164,8 @@ Compose 固定 PostgreSQL 18-alpine OCI digest，等待数据库健康后启动�
 | `audit_events` | 管理写操作的 actor、action、target 和受控 metadata |
 
 应用代码使用 camelCase；`CamelCasePlugin` 映射 PostgreSQL snake_case。
+
+`apps/server/src/tools/` 提供两个只面向空专用目标的离线导入入口：`lxserver-v2-import` 读取 `XCQ0607/lxserver v2.0.0` 的完整数据目录，`lx-music-sync-server-import` 读取官方 data format v2 目录和单独的 JSON 用户配置。两者先生成脱敏 dry-run 计划，apply 时要求来源专用环境开关、目标数据库名确认，并在单个事务中写入业务数据和审计后复核行数。
 
 ### 8.1 事务不变量
 

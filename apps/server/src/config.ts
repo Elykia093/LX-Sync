@@ -53,7 +53,7 @@ const configSchema = z.object({
   DATABASE_URL: z.string().min(1),
   MASTER_KEY: base64Key,
   ADMIN_USERNAME: z.string().trim().min(1).max(64).default('admin'),
-  ADMIN_PASSWORD: z.string().min(12).max(256),
+  ADMIN_PASSWORD: z.string().min(1).max(256),
   SESSION_TTL_HOURS: z.coerce.number().int().min(1).max(720).default(24),
   MAX_SNAPSHOTS: z.coerce.number().int().min(1).max(1000).default(10),
   TRUST_PROXY: z

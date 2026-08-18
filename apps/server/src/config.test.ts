@@ -36,3 +36,21 @@ describe('SYNC_BASE_PATH configuration', () => {
     ).toThrow()
   })
 })
+
+describe('ADMIN_PASSWORD configuration', () => {
+  it('accepts a non-empty password shorter than 12 characters', () => {
+    expect(
+      loadConfig({ ...requiredEnvironment, ADMIN_PASSWORD: 'x' })
+        .ADMIN_PASSWORD,
+    ).toBe('x')
+  })
+
+  it.each(['', 'x'.repeat(257)])(
+    'rejects an invalid password length',
+    (password) => {
+      expect(() =>
+        loadConfig({ ...requiredEnvironment, ADMIN_PASSWORD: password }),
+      ).toThrow()
+    },
+  )
+})

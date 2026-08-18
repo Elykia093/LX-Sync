@@ -40,7 +40,7 @@ pnpm --filter @lx-sync/server exec node dist/tools/lxserver-v2-import.js --sourc
 
 dry-run 不连接数据库，只读取备份并输出用户数、设备数、源快照数、去重后快照数、设备基线数和 head 项目数等聚合摘要。它不会输出用户名、访问码、设备 ID、设备密钥、server ID、歌名或同步 payload。
 
-`--max-snapshots <1..1000>` 和 `--add-music-location-type <top|bottom>` 仅是缺少用户级配置时的默认值。导入器优先保留上游用户配置；若现有物理快照数更大，会提高该用户的快照上限，避免导入后立即裁剪历史。
+`--max-snapshots <1..1000>` 和 `--add-music-location-type <top|bottom>` 仅是缺少用户级配置时的默认值。导入器优先并原样保留上游用户配置。导入时全部合法物理快照都会写入；后续产生新快照时，LX-Sync 按该上限裁剪未被当前 head 或设备 baseline 引用的历史。
 
 ## 3. 隔离写入验证
 

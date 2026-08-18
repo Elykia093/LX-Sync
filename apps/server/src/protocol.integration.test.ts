@@ -729,6 +729,7 @@ async function connectClient(input: {
   socket.on('message', (data, isBinary) => {
     if (isBinary) return
     const payload = data.toString()
+    if (payload === 'ping') return
     if (payload.startsWith('cg_')) wireFrames.receivedCompressed = true
     void fixtureDecodeWireMessage(payload).then((decoded) => {
       message2call.message(JSON.parse(decoded) as unknown)

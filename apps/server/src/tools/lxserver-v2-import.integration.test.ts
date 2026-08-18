@@ -9,9 +9,11 @@ import { Repository } from '../db/repository.js'
 import type { ListData } from '../protocol/index.js'
 import { deriveConnectionKey, md5 } from '../security/crypto.js'
 import {
+  applyLxMusicSyncServerImportPlan,
   applyLxserverV2ImportPlan,
   assertTargetReadyForImport,
   assertTargetSchemaDedicated,
+  buildLxMusicSyncServerImportPlan,
   buildLxserverV2ImportPlan,
   TargetDatabaseNotEmptyError,
   TargetSchemaNotDedicatedError,
@@ -22,10 +24,12 @@ const integration = testDatabaseUrl ? describe : describe.skip
 
 integration('lxserver v2 PostgreSQL import', () => {
   const schemaName = `lx_sync_test_import_${randomBytes(8).toString('hex')}`
+  const officialSchemaName = `lx_sync_test_official_import_${randomBytes(8).toString('hex')}`
   const masterKey = randomBytes(32).toString('base64')
   let sourceDirectory = ''
   let fixture: Awaited<ReturnType<typeof createSourceFixture>>
   let database: ReturnType<typeof createDatabase>
+  let officialDatabase: ReturnType<typeof createDatabase>
 
   beforeAll(async () => {
     if (!testDatabaseUrl) return
@@ -36,21 +40,35 @@ integration('lxserver v2 PostgreSQL import', () => {
     const administrator = createDatabase(testDatabaseUrl)
     try {
       await sql.raw(`create schema "${schemaName}"`).execute(administrator)
+      await sql
+        .raw(`create schema "${officialSchemaName}"`)
+        .execute(administrator)
     } finally {
       await administrator.destroy()
     }
     database = createDatabase(databaseUrlForSchema(testDatabaseUrl, schemaName))
+    officialDatabase = createDatabase(
+      databaseUrlForSchema(testDatabaseUrl, officialSchemaName),
+    )
     await assertTargetSchemaDedicated(database)
+    await assertTargetSchemaDedicated(officialDatabase)
     await migrateToLatest(database, { migrationTableSchema: schemaName })
+    await migrateToLatest(officialDatabase, {
+      migrationTableSchema: officialSchemaName,
+    })
   })
 
   afterAll(async () => {
     if (!testDatabaseUrl) return
     if (database) await database.destroy()
+    if (officialDatabase) await officialDatabase.destroy()
     const administrator = createDatabase(testDatabaseUrl)
     try {
       await sql
         .raw(`drop schema if exists "${schemaName}" cascade`)
+        .execute(administrator)
+      await sql
+        .raw(`drop schema if exists "${officialSchemaName}" cascade`)
         .execute(administrator)
     } finally {
       await administrator.destroy()
@@ -149,6 +167,72 @@ integration('lxserver v2 PostgreSQL import', () => {
       TargetDatabaseNotEmptyError,
     )
   })
+
+  it('atomically imports the official server data and JSON config', async () => {
+    const plan = await buildLxMusicSyncServerImportPlan(
+      sourceDirectory,
+      fixture.officialConfigPath,
+      { maxSnapshots: 10, addMusicLocationType: 'top' },
+    )
+    await expect(
+      applyLxMusicSyncServerImportPlan(
+        officialDatabase,
+        plan,
+        'invalid-master-key',
+      ),
+    ).rejects.toThrow()
+    await expect(
+      assertTargetReadyForImport(officialDatabase),
+    ).resolves.toBeUndefined()
+    await expect(
+      applyLxMusicSyncServerImportPlan(officialDatabase, plan, masterKey),
+    ).resolves.toEqual(plan.summary)
+
+    const repository = new Repository(officialDatabase, masterKey)
+    await expect(repository.ensureServiceMetadata()).resolves.toBe(
+      fixture.serverId,
+    )
+    const users = await repository.getEnabledUsersForAuthentication()
+    expect(users).toHaveLength(1)
+    const user = users[0]
+    expect(user).toMatchObject({
+      name: fixture.userName,
+      authKey: deriveConnectionKey(fixture.connectionCode),
+      maxSnapshots: 15,
+      addMusicLocationType: 'bottom',
+    })
+    if (!user) throw new Error('Imported official user is missing')
+
+    await expect(repository.getDevice(fixture.clientId)).resolves.toMatchObject(
+      {
+        userId: user.id,
+        key: fixture.deviceKey,
+      },
+    )
+    const listHead = await repository.getHead('list', user.id)
+    const dislikeHead = await repository.getHead('dislike', user.id)
+    expect(listHead.data).toEqual(fixture.listData)
+    expect(dislikeHead.data).toBe(fixture.dislikePayload)
+    await expect(
+      repository.getDeviceSnapshot('list', user.id, fixture.clientId),
+    ).resolves.toMatchObject({ id: listHead.id })
+    await expect(
+      repository.getDeviceSnapshot('dislike', user.id, fixture.clientId),
+    ).resolves.toMatchObject({ id: dislikeHead.id })
+
+    await expect(repository.listAudit(10)).resolves.toEqual([
+      expect.objectContaining({
+        actor: 'migration:lx-music-sync-server-v2',
+        action: 'migration.lx-music-sync-server-v2.import',
+        metadata: {
+          sourceFormat: 'lx-music-sync-server-v2',
+          deviceCount: 1,
+          snapshotCount: 2,
+          baselineCount: 2,
+        },
+      }),
+    ])
+  })
 })
 
 async function createSourceFixture(source: string) {
@@ -197,6 +281,18 @@ async function createSourceFixture(source: string) {
       },
     ]),
   )
+  const officialConfigPath = path.join(source, 'official-config.json')
+  await writeFile(
+    officialConfigPath,
+    JSON.stringify({
+      serverName: 'Official source',
+      'proxy.enabled': false,
+      'proxy.header': 'x-real-ip',
+      maxSnapshotNum: 15,
+      'list.addMusicLocationType': 'bottom',
+      users: [{ name: userName, password: connectionCode }],
+    }),
+  )
   await writeFile(
     path.join(userDirectory, 'devices.json'),
     JSON.stringify({
@@ -237,6 +333,7 @@ async function createSourceFixture(source: string) {
     songName,
     listData,
     dislikePayload,
+    officialConfigPath,
   }
 }
 

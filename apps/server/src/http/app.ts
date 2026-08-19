@@ -12,6 +12,7 @@ import {
   type SnapshotRecord,
 } from '../db/repository.js'
 import { AppError } from '../errors.js'
+import { playlistQualities } from '../playlist-quality.js'
 import { type ListData, LX_SYNC } from '../protocol/index.js'
 import {
   deriveConnectionKey,
@@ -50,6 +51,7 @@ export interface AppDependencies {
     | 'listUsers'
     | 'createUser'
     | 'getUserSummary'
+    | 'getPlaylistQualities'
     | 'updateUser'
     | 'listDevices'
     | 'revokeDevice'
@@ -145,6 +147,9 @@ const playlistNameMutationSchema = z
     name: z.string().trim().min(1).max(64),
     expectedSnapshotId: z.string().uuid(),
   })
+  .strict()
+const playlistUpdateMutationSchema = playlistNameMutationSchema
+  .extend({ quality: z.enum(playlistQualities).nullable().optional() })
   .strict()
 const playlistSnapshotMutationSchema = z
   .object({ expectedSnapshotId: z.string().uuid() })
@@ -621,9 +626,11 @@ export async function buildApp(dependencies: AppDependencies) {
         protectedApi.get('/users/:userId/playlists', async (request) => {
           const { userId } = userParamsSchema.parse(request.params)
           await requireUser(repository, userId)
-          return playlistSummaryResponse(
-            await repository.getHead('list', userId),
-          )
+          const [head, qualities] = await Promise.all([
+            repository.getHead('list', userId),
+            repository.getPlaylistQualities(userId),
+          ])
+          return playlistSummaryResponse(head, qualities)
         })
 
         protectedApi.get(
@@ -634,18 +641,22 @@ export async function buildApp(dependencies: AppDependencies) {
             )
             const query = playlistQuerySchema.parse(request.query)
             await requireUser(repository, userId)
-            const snapshot = await repository.getSnapshot(
-              userId,
-              'list',
-              query.snapshotId,
-            )
+            const [snapshot, qualities] = await Promise.all([
+              repository.getSnapshot(userId, 'list', query.snapshotId),
+              repository.getPlaylistQualities(userId),
+            ])
             if (!snapshot)
               throw new AppError(
                 404,
                 'SNAPSHOT_NOT_FOUND',
                 'Snapshot was not found',
               )
-            const response = playlistDetailResponse(snapshot, playlistId, query)
+            const response = playlistDetailResponse(
+              snapshot,
+              playlistId,
+              query,
+              qualities,
+            )
             if (!response)
               throw new AppError(
                 404,
@@ -684,12 +695,13 @@ export async function buildApp(dependencies: AppDependencies) {
             const { userId, playlistId } = playlistParamsSchema.parse(
               request.params,
             )
-            const body = playlistNameMutationSchema.parse(request.body)
+            const body = playlistUpdateMutationSchema.parse(request.body)
             return playlistManagement.rename({
               userId,
               actor: session.username,
               playlistId,
               name: body.name,
+              ...(body.quality === undefined ? {} : { quality: body.quality }),
               expectedSnapshotId: body.expectedSnapshotId,
               logger: requestSyncLogger(request),
             })
@@ -868,15 +880,18 @@ export async function buildApp(dependencies: AppDependencies) {
             )
             await requireUser(repository, userId)
             await dependencies.registry.closeUser(userId)
-            if (
-              !(await repository.restoreSnapshot(userId, domain, snapshotId, {
-                actor: session.username,
-                action: 'snapshot.restore',
-                targetType: 'snapshot',
-                targetId: snapshotId,
-                metadata: { userId, domain },
-              }))
-            ) {
+            const restored = await dependencies.registry.runExclusive(
+              userId,
+              () =>
+                repository.restoreSnapshot(userId, domain, snapshotId, {
+                  actor: session.username,
+                  action: 'snapshot.restore',
+                  targetType: 'snapshot',
+                  targetId: snapshotId,
+                  metadata: { userId, domain },
+                }),
+            )
+            if (!restored) {
               throw new AppError(
                 404,
                 'SNAPSHOT_NOT_FOUND',

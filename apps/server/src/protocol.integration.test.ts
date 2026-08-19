@@ -14,8 +14,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { WebSocket } from 'ws'
 import type { AppConfig } from './config.js'
 import { createDatabase, migrateToLatest } from './db/connection.js'
+import * as initialMigration from './db/migrations/001_initial.js'
+import * as playlistPreferencesMigration from './db/migrations/002_playlist_preferences.js'
 import { Repository, SnapshotConflictError } from './db/repository.js'
 import { buildApp } from './http/app.js'
+import type { PlaylistQuality } from './playlist-quality.js'
 import type {
   DislikeAction,
   ListAction,
@@ -64,6 +67,94 @@ describe('PostgreSQL integration safety gate', () => {
       }),
     ).toThrow('test database')
   })
+})
+
+describeWithDatabase.sequential('PostgreSQL schema upgrade', () => {
+  if (!testDatabaseUrl) return
+
+  it('upgrades an existing 0.4.0 schema and enforces preference constraints', async () => {
+    const schemaName = `lx_sync_test_upgrade_${randomBytes(8).toString('hex')}`
+    const administrator = createDatabase(testDatabaseUrl)
+    try {
+      await sql.raw(`create schema "${schemaName}"`).execute(administrator)
+    } finally {
+      await administrator.destroy()
+    }
+
+    const database = createDatabase(
+      databaseUrlForSchema(testDatabaseUrl, schemaName),
+    )
+    try {
+      await initialMigration.up(database)
+      const repository = new Repository(
+        database,
+        randomBytes(32).toString('base64'),
+      )
+      const user = await repository.createUser({
+        name: 'upgrade-user',
+        authKey: randomBytes(32).toString('base64'),
+        maxSnapshots: 10,
+        addMusicLocationType: 'bottom',
+      })
+      const headsBefore = await database
+        .selectFrom('syncHeads')
+        .select(['domain', 'snapshotId'])
+        .where('userId', '=', user.id)
+        .orderBy('domain')
+        .execute()
+
+      await playlistPreferencesMigration.up(database)
+
+      const headsAfter = await database
+        .selectFrom('syncHeads')
+        .select(['domain', 'snapshotId'])
+        .where('userId', '=', user.id)
+        .orderBy('domain')
+        .execute()
+      expect(headsAfter).toEqual(headsBefore)
+
+      await database
+        .insertInto('playlistPreferences')
+        .values({
+          userId: user.id,
+          playlistId: 'upgrade-playlist',
+          quality: 'hires',
+        })
+        .executeTakeFirstOrThrow()
+      await expect(
+        database
+          .insertInto('playlistPreferences')
+          .values({
+            userId: user.id,
+            playlistId: 'invalid-quality',
+            quality: 'invalid' as PlaylistQuality,
+          })
+          .execute(),
+      ).rejects.toThrow()
+
+      await database
+        .deleteFrom('syncUsers')
+        .where('id', '=', user.id)
+        .executeTakeFirstOrThrow()
+      await expect(
+        database.selectFrom('playlistPreferences').selectAll().execute(),
+      ).resolves.toEqual([])
+
+      await playlistPreferencesMigration.down(database)
+      const table = await sql<{ name: string | null }>`
+        select to_regclass('playlist_preferences')::text as name
+      `.execute(database)
+      expect(table.rows).toEqual([{ name: null }])
+    } finally {
+      await database.destroy()
+      const cleanup = createDatabase(testDatabaseUrl)
+      try {
+        await sql.raw(`drop schema "${schemaName}" cascade`).execute(cleanup)
+      } finally {
+        await cleanup.destroy()
+      }
+    }
+  }, 30_000)
 })
 
 interface ServerRemote {
@@ -326,6 +417,80 @@ describeWithDatabase.sequential('LX v4 protocol with PostgreSQL', () => {
     expect(firstDislikeBaseline?.id).toBe(finalDislikeHead.id)
     expect(secondDislikeBaseline?.id).toBe(finalDislikeHead.id)
   }, 30_000)
+
+  it('persists playlist quality preferences outside the LX wire snapshot', async () => {
+    const user = await repository.createUser({
+      name: 'quality-preference-user',
+      authKey: randomBytes(32).toString('base64'),
+      maxSnapshots: 10,
+      addMusicLocationType: 'bottom',
+    })
+    const initialHead = await repository.getHead('list', user.id)
+    const playlistId = 'quality-playlist'
+    const data: ListData = {
+      ...initialHead.data,
+      userList: [
+        {
+          id: playlistId,
+          name: 'Quality playlist',
+          source: 'wy',
+          sourceListId: 'remote-list',
+          locationUpdateTime: null,
+          list: [],
+        },
+      ],
+    }
+
+    const saved = await repository.saveSnapshot({
+      userId: user.id,
+      domain: 'list',
+      data,
+      expectedSnapshotId: initialHead.id,
+      playlistQualityUpdate: { playlistId, quality: 'hires' },
+    })
+    expect(saved.data.userList[0]).toMatchObject({
+      id: playlistId,
+      source: 'wy',
+      sourceListId: 'remote-list',
+    })
+    expect(await repository.getPlaylistQualities(user.id)).toEqual(
+      new Map([[playlistId, 'hires']]),
+    )
+
+    const sameSnapshot = await repository.saveSnapshot({
+      userId: user.id,
+      domain: 'list',
+      data,
+      expectedSnapshotId: saved.id,
+      playlistQualityUpdate: { playlistId, quality: 'flac' },
+    })
+    expect(sameSnapshot.id).toBe(saved.id)
+    expect(await repository.getPlaylistQualities(user.id)).toEqual(
+      new Map([[playlistId, 'flac']]),
+    )
+
+    const removed = await repository.saveSnapshot({
+      userId: user.id,
+      domain: 'list',
+      data: { ...data, userList: [] },
+      expectedSnapshotId: sameSnapshot.id,
+    })
+    expect(await repository.getPlaylistQualities(user.id)).toEqual(new Map())
+
+    await repository.restoreSnapshot(user.id, 'list', saved.id)
+    await repository.saveSnapshot({
+      userId: user.id,
+      domain: 'list',
+      data,
+      expectedSnapshotId: saved.id,
+      playlistQualityUpdate: { playlistId, quality: 'master' },
+    })
+    expect(await repository.getPlaylistQualities(user.id)).toEqual(
+      new Map([[playlistId, 'master']]),
+    )
+    await repository.restoreSnapshot(user.id, 'list', removed.id)
+    expect(await repository.getPlaylistQualities(user.id)).toEqual(new Map())
+  })
 
   it('allows exactly one cross-connection CAS update for the same head', async () => {
     const user = await repository.createUser({

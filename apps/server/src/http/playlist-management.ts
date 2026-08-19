@@ -1,11 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import {
+  type PlaylistQualityUpdate,
   type Repository,
   SnapshotConflictError,
   type SnapshotRecord,
   type UserSummary,
 } from '../db/repository.js'
 import { AppError } from '../errors.js'
+import type { PlaylistQuality } from '../playlist-quality.js'
 import type {
   ListAction,
   ListData,
@@ -33,6 +35,7 @@ type PlaylistManagementRepository = Pick<
   'getUserSummary' | 'markDeviceSnapshot' | 'saveSnapshot'
 > & {
   getHead(domain: 'list', userId: string): Promise<SnapshotRecord<ListData>>
+  getPlaylistQualities(userId: string): Promise<Map<string, PlaylistQuality>>
 }
 
 interface MutationContext {
@@ -45,6 +48,7 @@ interface MutationPlan {
   affectedPlaylistCount?: number
   affectedSongCount?: number
   resultPlaylistId?: string
+  playlistQualityUpdate?: PlaylistQualityUpdate
 }
 
 interface ResolvedPlaylist {
@@ -140,7 +144,11 @@ export class PlaylistManagementService {
         }
       },
     })
-    return withPlaylist(result.snapshot, userPlaylistApiId(wireId))
+    return withPlaylist(
+      result.snapshot,
+      userPlaylistApiId(wireId),
+      await this.repository.getPlaylistQualities(input.userId),
+    )
   }
 
   async rename(input: {
@@ -148,12 +156,14 @@ export class PlaylistManagementService {
     actor: string
     playlistId: string
     name: string
+    quality?: PlaylistQuality | null
     expectedSnapshotId: string
     logger?: SyncLogger
   }): Promise<PlaylistUpsertResult> {
     const result = await this.mutate({
       ...input,
-      auditAction: 'playlist.rename',
+      auditAction:
+        input.quality === undefined ? 'playlist.rename' : 'playlist.update',
       build: ({ head }) => {
         const playlist = resolveWritableUserPlaylist(
           head.data,
@@ -170,12 +180,24 @@ export class PlaylistManagementService {
             ],
           },
           resultPlaylistId: playlist.apiId,
+          ...(input.quality === undefined
+            ? {}
+            : {
+                playlistQualityUpdate: {
+                  playlistId: playlist.wireId,
+                  quality: input.quality,
+                },
+              }),
         }
       },
     })
     if (!result.resultPlaylistId)
       throw new AppError(500, 'INTERNAL_ERROR', 'Playlist result is missing')
-    return withPlaylist(result.snapshot, result.resultPlaylistId)
+    return withPlaylist(
+      result.snapshot,
+      result.resultPlaylistId,
+      await this.repository.getPlaylistQualities(input.userId),
+    )
   }
 
   async delete(input: {
@@ -195,6 +217,7 @@ export class PlaylistManagementService {
         )
         return {
           action: { action: 'list_remove', data: [playlist.wireId] },
+          playlistQualityUpdate: { playlistId: playlist.wireId, quality: null },
         }
       },
     })
@@ -382,6 +405,9 @@ export class PlaylistManagementService {
             affectedSongCount,
           },
         },
+        ...(plan.playlistQualityUpdate
+          ? { playlistQualityUpdate: plan.playlistQualityUpdate }
+          : {}),
       })
       await broadcastListAction({
         repository: this.repository,
@@ -421,8 +447,9 @@ function songMutationResponse(
 function withPlaylist(
   snapshot: SnapshotRecord<ListData>,
   playlistId: string,
+  qualities: ReadonlyMap<string, PlaylistQuality>,
 ): PlaylistUpsertResult {
-  const playlist = playlistSummaryResponse(snapshot).data.find(
+  const playlist = playlistSummaryResponse(snapshot, qualities).data.find(
     (item) => item.id === playlistId,
   )
   if (!playlist)

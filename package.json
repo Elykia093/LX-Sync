@@ -1,6 +1,6 @@
 {
   "name": "lx-sync",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "A self-hosted LX Music sync service with PostgreSQL persistence.",
   "license": "Apache-2.0",
@@ -21,8 +21,8 @@
     "typecheck": "pnpm -r typecheck && tsc -p tsconfig.e2e.json --noEmit"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.5.4",
-    "@playwright/test": "1.61.1",
+    "@biomejs/biome": "2.5.9",
+    "@playwright/test": "1.62.1",
     "@types/node": "24.13.3",
     "@vitest/coverage-v8": "4.1.10",
     "typescript": "7.0.2",

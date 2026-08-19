@@ -27,6 +27,7 @@ const allowedTargetTables = new Set([
   'devices',
   'kysely_migration',
   'kysely_migration_lock',
+  'playlist_preferences',
   'service_metadata',
   'sync_heads',
   'sync_snapshots',
@@ -37,6 +38,7 @@ const targetBusinessTables = new Set([
   'audit_events',
   'device_sync_state',
   'devices',
+  'playlist_preferences',
   'service_metadata',
   'sync_heads',
   'sync_snapshots',
@@ -529,6 +531,7 @@ async function assertTargetDatabaseEmpty(
     baselines,
     sessions,
     audit,
+    playlistPreferences,
   ] = await Promise.all([
     countRows(executor, 'serviceMetadata'),
     countRows(executor, 'syncUsers'),
@@ -538,6 +541,7 @@ async function assertTargetDatabaseEmpty(
     countRows(executor, 'deviceSyncState'),
     countRows(executor, 'adminSessions'),
     countRows(executor, 'auditEvents'),
+    countRows(executor, 'playlistPreferences'),
   ])
   if (
     [
@@ -549,6 +553,7 @@ async function assertTargetDatabaseEmpty(
       baselines,
       sessions,
       audit,
+      playlistPreferences,
     ].some((count) => count !== 0)
   )
     throw new TargetDatabaseNotEmptyError()
@@ -558,16 +563,25 @@ async function verifyImportedCounts(
   transaction: Transaction<Database>,
   summary: LxserverV2ImportSummary,
 ): Promise<void> {
-  const [metadata, users, devices, snapshots, heads, baselines, audit] =
-    await Promise.all([
-      countRows(transaction, 'serviceMetadata'),
-      countRows(transaction, 'syncUsers'),
-      countRows(transaction, 'devices'),
-      countRows(transaction, 'syncSnapshots'),
-      countRows(transaction, 'syncHeads'),
-      countRows(transaction, 'deviceSyncState'),
-      countRows(transaction, 'auditEvents'),
-    ])
+  const [
+    metadata,
+    users,
+    devices,
+    snapshots,
+    heads,
+    baselines,
+    audit,
+    playlistPreferences,
+  ] = await Promise.all([
+    countRows(transaction, 'serviceMetadata'),
+    countRows(transaction, 'syncUsers'),
+    countRows(transaction, 'devices'),
+    countRows(transaction, 'syncSnapshots'),
+    countRows(transaction, 'syncHeads'),
+    countRows(transaction, 'deviceSyncState'),
+    countRows(transaction, 'auditEvents'),
+    countRows(transaction, 'playlistPreferences'),
+  ])
   if (
     metadata !== 1 ||
     users !== summary.users ||
@@ -575,7 +589,8 @@ async function verifyImportedCounts(
     snapshots !== summary.storedSnapshots ||
     heads !== summary.users * 2 ||
     baselines !== summary.baselines ||
-    audit !== summary.users
+    audit !== summary.users ||
+    playlistPreferences !== 0
   )
     throw new Error('Imported row count verification failed')
 }
@@ -589,6 +604,7 @@ type CountableTable =
   | 'deviceSyncState'
   | 'adminSessions'
   | 'auditEvents'
+  | 'playlistPreferences'
 
 type DatabaseExecutor = Kysely<Database> | Transaction<Database>
 

@@ -52,6 +52,7 @@ describe('playlist API client', () => {
     expect(detail.data).toEqual([
       expect.objectContaining({ id: 7, position: 26, source: 'wy' }),
     ])
+    expect(detail.playlist.quality).toBeNull()
     expect(fetchMock).toHaveBeenCalledWith(
       `/api/v1/users/${userId}/playlists/user%3Aroad%2Ftrip?snapshotId=${snapshotId}&q=night+song&source=wy&singer=artist&albumName=album&offset=25&limit=25`,
       { headers: {} },
@@ -142,6 +143,79 @@ describe('playlist API client', () => {
       {
         method: 'POST',
         body: JSON.stringify({ ...baseInput, id: 2 }),
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  })
+
+  it('sends a playlist quality replacement in the PATCH body', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        snapshotId,
+        snapshotCreatedAt: createdAt,
+        playlist: {
+          id: 'user:target',
+          name: 'Target',
+          type: 'user',
+          quality: 'hires',
+          songCount: 0,
+        },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    const result = await api.renamePlaylist(userId, 'user:target', {
+      name: 'Target',
+      quality: 'hires',
+      expectedSnapshotId: snapshotId,
+    })
+
+    expect(result.playlist.quality).toBe('hires')
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/users/${userId}/playlists/user%3Atarget`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: 'Target',
+          quality: 'hires',
+          expectedSnapshotId: snapshotId,
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  })
+
+  it('sends null to clear a playlist quality override', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      Response.json({
+        snapshotId,
+        snapshotCreatedAt: createdAt,
+        playlist: {
+          id: 'user:target',
+          name: 'Target',
+          type: 'user',
+          quality: null,
+          songCount: 0,
+        },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await api.renamePlaylist(userId, 'user:target', {
+      name: 'Target',
+      quality: null,
+      expectedSnapshotId: snapshotId,
+    })
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/users/${userId}/playlists/user%3Atarget`,
+      {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: 'Target',
+          quality: null,
+          expectedSnapshotId: snapshotId,
+        }),
         headers: { 'Content-Type': 'application/json' },
       },
     )

@@ -1,5 +1,6 @@
 import type { SnapshotRecord } from '../db/repository.js'
 import { AppError } from '../errors.js'
+import type { PlaylistQuality } from '../playlist-quality.js'
 import type { ListData, MusicInfo } from '../protocol/index.js'
 
 export type PlaylistType = 'default' | 'love' | 'user'
@@ -8,6 +9,7 @@ export interface PlaylistSummary {
   id: string
   name: string
   type: PlaylistType
+  quality: PlaylistQuality | null
   songCount: number
 }
 
@@ -26,11 +28,14 @@ interface PlaylistRecord extends PlaylistSummary {
   songs: MusicInfo[]
 }
 
-export function playlistSummaryResponse(head: SnapshotRecord<ListData>) {
+export function playlistSummaryResponse(
+  head: SnapshotRecord<ListData>,
+  qualities: ReadonlyMap<string, PlaylistQuality> = new Map(),
+) {
   return {
     snapshotId: head.id,
     snapshotCreatedAt: head.createdAt.toISOString(),
-    data: playlistRecords(head.data).map(
+    data: playlistRecords(head.data, qualities).map(
       ({ songs: _songs, wireId: _wireId, ...playlist }) => playlist,
     ),
   }
@@ -47,8 +52,9 @@ export function playlistDetailResponse(
     offset: number
     limit: number
   },
+  qualities: ReadonlyMap<string, PlaylistQuality> = new Map(),
 ) {
-  const record = playlistRecords(head.data).find(
+  const record = playlistRecords(head.data, qualities).find(
     (playlist) => playlist.id === playlistId,
   )
   if (!record) return null
@@ -87,7 +93,10 @@ export function playlistDetailResponse(
   }
 }
 
-function playlistRecords(data: ListData): PlaylistRecord[] {
+function playlistRecords(
+  data: ListData,
+  qualities: ReadonlyMap<string, PlaylistQuality> = new Map(),
+): PlaylistRecord[] {
   assertUnambiguousUserPlaylistIds(data)
   return [
     {
@@ -95,6 +104,7 @@ function playlistRecords(data: ListData): PlaylistRecord[] {
       wireId: 'default',
       name: '默认列表',
       type: 'default',
+      quality: null,
       songCount: data.defaultList.length,
       songs: data.defaultList,
     },
@@ -103,6 +113,7 @@ function playlistRecords(data: ListData): PlaylistRecord[] {
       wireId: 'love',
       name: '收藏列表',
       type: 'love',
+      quality: null,
       songCount: data.loveList.length,
       songs: data.loveList,
     },
@@ -111,6 +122,7 @@ function playlistRecords(data: ListData): PlaylistRecord[] {
       wireId: playlist.id,
       name: playlist.name.trim() || '未命名歌单',
       type: 'user' as const,
+      quality: qualities.get(playlist.id) ?? null,
       songCount: playlist.list.length,
       songs: playlist.list,
     })),

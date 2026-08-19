@@ -131,6 +131,7 @@ async function createFixture(options?: {
     listDevices: async () => [],
     revokeDevice: async () => false,
     getHead: async () => exportSnapshot,
+    getPlaylistQualities: async () => new Map(),
     saveSnapshot: (async () =>
       exportSnapshot) as unknown as AppDependencies['repository']['saveSnapshot'],
     markDeviceSnapshot: async () => {},

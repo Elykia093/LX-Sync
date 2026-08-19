@@ -1114,7 +1114,7 @@ select:focus {
 
 .playlist-rename {
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) auto auto auto;
+  grid-template-columns: minmax(180px, 1fr) minmax(140px, 180px) auto auto auto;
   gap: 10px;
   align-items: end;
   margin-bottom: 18px;

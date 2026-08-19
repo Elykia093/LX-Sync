@@ -1,5 +1,6 @@
 import { randomBytes, randomUUID } from 'node:crypto'
 import { type Kysely, sql, type Transaction, type Updateable } from 'kysely'
+import type { PlaylistQuality } from '../playlist-quality.js'
 import type {
   AddMusicLocationType,
   DislikeRules,
@@ -64,6 +65,11 @@ export interface UserSummary {
   createdAt: Date
 }
 
+export interface PlaylistQualityUpdate {
+  playlistId: string
+  quality: PlaylistQuality | null
+}
+
 export class SnapshotConflictError extends Error {
   constructor() {
     super('Snapshot head changed')
@@ -79,6 +85,17 @@ export class Repository {
 
   async checkDatabase(): Promise<void> {
     await sql`select 1`.execute(this.db)
+  }
+
+  async getPlaylistQualities(
+    userId: string,
+  ): Promise<Map<string, PlaylistQuality>> {
+    const rows = await this.db
+      .selectFrom('playlistPreferences')
+      .select(['playlistId', 'quality'])
+      .where('userId', '=', userId)
+      .execute()
+    return new Map(rows.map((row) => [row.playlistId, row.quality]))
   }
 
   async ensureServiceMetadata(): Promise<string> {
@@ -501,6 +518,7 @@ export class Repository {
     sourceDeviceId?: string
     expectedSnapshotId?: string
     audit?: AuditEventInput
+    playlistQualityUpdate?: PlaylistQualityUpdate
   }): Promise<SnapshotRecord<ListData>>
   async saveSnapshot(input: {
     userId: string
@@ -517,12 +535,15 @@ export class Repository {
     sourceDeviceId?: string
     expectedSnapshotId?: string
     audit?: AuditEventInput
+    playlistQualityUpdate?: PlaylistQualityUpdate
   }): Promise<SnapshotRecord> {
     let snapshot: SerializedSnapshot
+    let listData: ListData | undefined
     if (input.domain === 'list') {
       if (typeof input.data === 'string')
         throw new Error('List snapshot must be an object')
-      snapshot = serializeSnapshot('list', input.data)
+      listData = input.data
+      snapshot = serializeSnapshot('list', listData)
     } else {
       if (typeof input.data !== 'string')
         throw new Error('Dislike snapshot must be a string')
@@ -588,6 +609,18 @@ export class Repository {
           input.domain,
           stored.id,
         )
+      if (input.playlistQualityUpdate)
+        await this.updatePlaylistQuality(
+          transaction,
+          input.userId,
+          input.playlistQualityUpdate,
+        )
+      if (listData)
+        await this.deleteStalePlaylistQualities(
+          transaction,
+          input.userId,
+          listData,
+        )
       if (input.audit) await this.insertAudit(transaction, input.audit)
       const user = await transaction
         .selectFrom('syncUsers')
@@ -602,6 +635,56 @@ export class Repository {
       )
       return this.mapSnapshot(input.domain, stored)
     })
+  }
+
+  private async updatePlaylistQuality(
+    executor: DatabaseExecutor,
+    userId: string,
+    update: PlaylistQualityUpdate,
+  ): Promise<void> {
+    if (update.quality === null) {
+      await executor
+        .deleteFrom('playlistPreferences')
+        .where('userId', '=', userId)
+        .where('playlistId', '=', update.playlistId)
+        .execute()
+      return
+    }
+    const quality = update.quality
+    await executor
+      .insertInto('playlistPreferences')
+      .values({
+        userId,
+        playlistId: update.playlistId,
+        quality,
+      })
+      .onConflict((conflict) =>
+        conflict.columns(['userId', 'playlistId']).doUpdateSet({
+          quality,
+          updatedAt: new Date(),
+        }),
+      )
+      .execute()
+  }
+
+  private async deleteStalePlaylistQualities(
+    executor: DatabaseExecutor,
+    userId: string,
+    data: ListData,
+  ): Promise<void> {
+    const playlistIds = data.userList.map((playlist) => playlist.id)
+    if (playlistIds.length === 0) {
+      await executor
+        .deleteFrom('playlistPreferences')
+        .where('userId', '=', userId)
+        .execute()
+      return
+    }
+    await executor
+      .deleteFrom('playlistPreferences')
+      .where('userId', '=', userId)
+      .where('playlistId', 'not in', playlistIds)
+      .execute()
   }
 
   private async upsertDeviceState(
@@ -708,7 +791,7 @@ export class Repository {
     return this.db.transaction().execute(async (transaction) => {
       const snapshot = await transaction
         .selectFrom('syncSnapshots')
-        .select('id')
+        .select(['id', 'payload'])
         .where('id', '=', snapshotId)
         .where('userId', '=', userId)
         .where('domain', '=', domain)
@@ -721,6 +804,12 @@ export class Repository {
         .where('domain', '=', domain)
         .executeTakeFirst()
       if (result.numUpdatedRows !== 1n) return false
+      if (domain === 'list')
+        await this.deleteStalePlaylistQualities(
+          transaction,
+          userId,
+          parseSnapshot('list', snapshot.payload),
+        )
       if (audit) await this.insertAudit(transaction, audit)
       return true
     })

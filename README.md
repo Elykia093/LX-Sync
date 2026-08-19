@@ -5,14 +5,14 @@
 > [!IMPORTANT]
 > 本项目是非官方实现，与 LX Music / 洛雪音乐助手及其作者没有隶属或背书关系。当前状态为 **Alpha**，请先在非关键数据上验证，并建立可恢复备份。
 
-当前版本说明：[LX-Sync v0.4.0](docs/releases/v0.4.0.md)。
+当前版本说明：[LX-Sync v0.5.0](docs/releases/v0.5.0.md)。
 
 ## 能做什么
 
 - 兼容 LX Music v4 的 `/hello`、`/id`、`/ah` 与 WebSocket 同步流程。
 - 同步歌单和“不喜欢”规则，处理多设备增量合并与冲突重试。
 - 用 PostgreSQL 保存每个同步域的当前 head、设备同步基线和有限历史快照。
-- 管理同步用户、连接访问码、设备撤销、歌单创建/改名/删除与歌曲批量移动/复制/移除、快照恢复、快照 JSON 导出和审计记录。
+- 管理同步用户、连接访问码、设备撤销、歌单创建/名称和首选音质编辑/删除与歌曲批量移动/复制/移除、快照恢复、快照 JSON 导出和审计记录。
 - 使用不透明 HttpOnly Cookie 保护同源管理端。
 - 单容器运行 Fastify API、LX WebSocket 和 React 静态资源。
 
@@ -34,7 +34,7 @@ flowchart LR
 
 ## 技术栈
 
-以下版本按 2026-07-20 的稳定/LTS 线精确锁定，不追 Current、RC 或 nightly。CI、容器与本地开发默认只验证表中的当前锁定基线；旧版本、旧发行变体和旧工具链不再作为适配目标。升级仍必须固定具体版本与 OCI digest，不能使用漂移的 `latest`。Docker Engine / Compose 一行记录的是本次测试服务器基线，GitHub-hosted runner 的 Docker 版本由平台管理：
+以下版本按 2026-08-19 的稳定/LTS 线精确锁定，不追 Current、RC 或 nightly。CI、容器与本地开发默认只验证表中的当前锁定基线；旧版本、旧发行变体和旧工具链不再作为适配目标。升级仍必须固定具体版本与 OCI digest，不能使用漂移的 `latest`。Docker Engine / Compose 一行记录的是本次测试服务器基线，GitHub-hosted runner 的 Docker 版本由平台管理：
 
 | 层 | 版本 |
 |---|---:|
@@ -42,15 +42,15 @@ flowchart LR
 | pnpm | 11.14.0 |
 | Docker Engine / Compose | 29.6.2 / 5.3.1 |
 | TypeScript | 7.0.2 |
-| Fastify / `@fastify/static` / `@fastify/cookie` | 5.10.0 / 10.1.0 / 11.1.2 |
+| Fastify / `@fastify/static` / `@fastify/cookie` | 5.12.0 / 10.1.3 / 11.1.2 |
 | PostgreSQL | 18-alpine |
-| Kysely / `pg` | 0.29.4 / 8.22.0 |
-| `ws` | 8.21.1 |
+| Kysely / `pg` | 0.29.5 / 8.23.0 |
+| `ws` | 8.21.3 |
 | Zod | 4.4.3 |
-| React / React DOM | 19.2.7 |
-| Vite / React plugin | 8.1.5 / 6.0.3 |
-| React Router / TanStack Query | 7.18.1 / 5.101.2 |
-| Vitest / Playwright / Biome | 4.1.10 / 1.61.1 / 2.5.4 |
+| React / React DOM | 19.2.8 |
+| Vite / React plugin | 8.2.1 / 6.0.5 |
+| React Router / TanStack Query | 7.18.2 / 5.101.4 |
+| Vitest / Playwright / Biome | 4.1.10 / 1.62.1 / 2.5.9 |
 
 唯一刻意保留的旧版本是 `message2call@0.1.3`。其 2.x 改变了 wire message 格式，而现有 LX 客户端和上游同步服务仍以 0.1.3 为协议基线；升级它属于协议迁移，不是普通依赖更新。
 
@@ -193,6 +193,7 @@ pnpm --filter @lx-sync/server test:integration
 - `device_sync_state`：设备上次成功同步基线，用于三方合并。
 - `admin_sessions`：只保存不透明会话 ID 的 SHA-256 摘要。
 - `audit_events`：管理员关键写操作，不记录访问码、Cookie 或密钥。
+- `playlist_preferences`：自建歌单当前首选音质；用户删除时级联，歌单从当前 list 消失时由同一事务清理。
 
 快照写入和 head 切换位于同一数据库事务，并对 head 加锁；并发修改发生冲突时，同步引擎最多重新合并 3 次。默认容量假设是单实例、低并发家庭/小团队部署（不超过约 100 个同步用户、每用户 100 台有效设备、默认每域 10 个历史快照）；这不是压测结论。更大规模需要先验证 payload 大小、连接数、数据库锁等待、存储增长和恢复时间。
 

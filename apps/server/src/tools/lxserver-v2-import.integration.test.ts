@@ -130,6 +130,9 @@ integration('lxserver v2 PostgreSQL import', () => {
     const dislikeHead = await repository.getHead('dislike', user.id)
     expect(listHead.data).toEqual(fixture.listData)
     expect(dislikeHead.data).toBe(fixture.dislikePayload)
+    await expect(repository.getPlaylistQualities(user.id)).resolves.toEqual(
+      new Map(),
+    )
     await expect(
       repository.getDeviceSnapshot('list', user.id, fixture.clientId),
     ).resolves.toMatchObject({ id: listHead.id })
@@ -213,6 +216,9 @@ integration('lxserver v2 PostgreSQL import', () => {
     const dislikeHead = await repository.getHead('dislike', user.id)
     expect(listHead.data).toEqual(fixture.listData)
     expect(dislikeHead.data).toBe(fixture.dislikePayload)
+    await expect(repository.getPlaylistQualities(user.id)).resolves.toEqual(
+      new Map(),
+    )
     await expect(
       repository.getDeviceSnapshot('list', user.id, fixture.clientId),
     ).resolves.toMatchObject({ id: listHead.id })

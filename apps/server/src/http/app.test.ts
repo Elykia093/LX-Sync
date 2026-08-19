@@ -43,6 +43,7 @@ describe('management authentication contract', () => {
     const createdUserId = '00000000-0000-4000-8000-000000000002'
     const auditActions: string[] = []
     const createdAuthKeys: string[] = []
+    const restoreEvents: string[] = []
     const closeUserStarted = Promise.withResolvers<void>()
     const closeUserFinished = Promise.withResolvers<void>()
     const protocolAuthUsers: Array<string | null> = []
@@ -132,6 +133,7 @@ describe('management authentication contract', () => {
       listDevices: async () => [],
       revokeDevice: async () => false,
       getHead: async () => listHead,
+      getPlaylistQualities: async () => new Map(),
       saveSnapshot: (async () =>
         listHead) as unknown as AppDependencies['repository']['saveSnapshot'],
       markDeviceSnapshot: async () => {},
@@ -144,7 +146,14 @@ describe('management authentication contract', () => {
         domain === 'list' && snapshotId === listHead.id
           ? listHead
           : null) as unknown as AppDependencies['repository']['getSnapshot'],
-      restoreSnapshot: async () => false,
+      restoreSnapshot: async (userId, domain, snapshotId) => {
+        restoreEvents.push('restore')
+        return (
+          userId === disabledUserId &&
+          domain === 'list' &&
+          snapshotId === listHead.id
+        )
+      },
       listAudit: async () => [],
     }
     const app = await buildApp({
@@ -162,13 +171,17 @@ describe('management authentication contract', () => {
       registry: {
         count: () => 0,
         closeUser: async (userId) => {
+          restoreEvents.push('close')
           if (userId !== disabledUserId) return
           closeUserStarted.resolve()
           await closeUserFinished.promise
         },
         closeDevice: async () => {},
         forUser: () => [],
-        runExclusive: (_userId, task) => task(),
+        runExclusive: (_userId, task) => {
+          restoreEvents.push('exclusive')
+          return task()
+        },
       },
       serverId: 'server-id',
       startedAt: new Date('2026-01-01T00:00:00.000Z'),
@@ -387,6 +400,15 @@ describe('management authentication contract', () => {
       syncPath: `/base/${disabledUserId}`,
     })
     expect(auditActions).toContain('user.update')
+
+    restoreEvents.length = 0
+    const restored = await app.inject({
+      method: 'POST',
+      url: `/api/v1/users/${disabledUserId}/sync-domains/list/snapshots/${listHead.id}/restorations`,
+      headers: { cookie, origin: config.PUBLIC_ORIGIN },
+    })
+    expect(restored.statusCode).toBe(201)
+    expect(restoreEvents).toEqual(['close', 'exclusive', 'restore'])
 
     const rotated = await app.inject({
       method: 'PUT',

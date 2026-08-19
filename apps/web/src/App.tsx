@@ -55,6 +55,7 @@ import {
   api,
   type Device,
   type ManagedSongSource,
+  type PlaylistQuality,
   type PlaylistSong,
   type Session,
   type Snapshot,
@@ -1131,6 +1132,9 @@ function PlaylistManager({ userId }: { userId: string }) {
   )
   const [createName, setCreateName] = useState('')
   const [renameName, setRenameName] = useState('')
+  const [playlistQuality, setPlaylistQuality] = useState<PlaylistQuality | ''>(
+    '',
+  )
   const [songSearchInput, setSongSearchInput] = useState('')
   const [songQuery, setSongQuery] = useState('')
   const [songSourceInput, setSongSourceInput] = useState<
@@ -1212,7 +1216,8 @@ function PlaylistManager({ userId }: { userId: string }) {
   }, [offset, songs.data])
   useEffect(() => {
     setRenameName(activePlaylist?.name ?? '')
-  }, [activePlaylist?.name])
+    setPlaylistQuality(activePlaylist?.quality ?? '')
+  }, [activePlaylist?.name, activePlaylist?.quality])
   const selectionScope = `${activePlaylistId ?? ''}\u0000${snapshotId}\u0000${songQuery}\u0000${songSourceQuery}\u0000${songSingerQuery}\u0000${songAlbumQuery}\u0000${offset}`
   const selectedSongIds =
     songSelection.scope === selectionScope ? songSelection.ids : []
@@ -1266,10 +1271,12 @@ function PlaylistManager({ userId }: { userId: string }) {
     mutationFn: (input: {
       playlistId: string
       name: string
+      quality?: PlaylistQuality | null
       expectedSnapshotId: string
     }) =>
       api.renamePlaylist(userId, input.playlistId, {
         name: input.name,
+        ...(input.quality === undefined ? {} : { quality: input.quality }),
         expectedSnapshotId: input.expectedSnapshotId,
       }),
     retry: false,
@@ -1450,6 +1457,7 @@ function PlaylistManager({ userId }: { userId: string }) {
     renamePlaylist.mutate({
       playlistId: activePlaylistId,
       name,
+      quality: playlistQuality === '' ? null : playlistQuality,
       expectedSnapshotId: snapshotId,
     })
   }
@@ -1641,7 +1649,12 @@ function PlaylistManager({ userId }: { userId: string }) {
                 >
                   <span>
                     <strong>{playlist.name}</strong>
-                    <small>{playlistTypeLabel(playlist.type)}</small>
+                    <small>
+                      {playlistTypeLabel(playlist.type)}
+                      {playlist.quality
+                        ? ` · ${qualityLabel(playlist.quality)}`
+                        : ''}
+                    </small>
                   </span>
                   <b>{playlist.songCount} 首</b>
                 </button>
@@ -1759,18 +1772,41 @@ function PlaylistManager({ userId }: { userId: string }) {
                   onChange={(event) => setRenameName(event.target.value)}
                 />
               </label>
+              <label>
+                <span>首选音质</span>
+                <select
+                  value={playlistQuality}
+                  aria-label="首选音质"
+                  onChange={(event) =>
+                    setPlaylistQuality(
+                      event.target.value as PlaylistQuality | '',
+                    )
+                  }
+                  disabled={activeMutationPending}
+                >
+                  <option value="">跟随客户端设置</option>
+                  <option value="128k">128K</option>
+                  <option value="320k">320K</option>
+                  <option value="flac">FLAC</option>
+                  <option value="hires">Hires 无损 24-Bit</option>
+                  <option value="atmos">臻品音质</option>
+                  <option value="atmos_plus">臻品音质 2.0</option>
+                  <option value="master">臻品母带</option>
+                </select>
+              </label>
               <button
                 className="secondary"
                 type="submit"
                 disabled={
                   !renameName.trim() ||
                   !snapshotId ||
-                  renameName.trim() === activePlaylist.name ||
+                  (renameName.trim() === activePlaylist.name &&
+                    playlistQuality === (activePlaylist.quality ?? '')) ||
                   activeMutationPending
                 }
               >
                 <Pencil aria-hidden="true" size={16} />
-                保存名称
+                保存修改
               </button>
               <button
                 className="danger"
@@ -2442,6 +2478,21 @@ function sourceLabel(source: string | null) {
       wy: '网易云',
       mg: '咪咕',
     }[source] ?? source
+  )
+}
+
+function qualityLabel(quality: string | null) {
+  if (!quality) return '跟随客户端设置'
+  return (
+    {
+      '128k': '128K',
+      '320k': '320K',
+      flac: 'FLAC',
+      hires: 'Hires 无损 24-Bit',
+      atmos: '臻品音质',
+      atmos_plus: '臻品音质 2.0',
+      master: '臻品母带',
+    }[quality] ?? quality
   )
 }
 

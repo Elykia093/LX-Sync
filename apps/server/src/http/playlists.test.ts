@@ -27,6 +27,7 @@ const head: SnapshotRecord<ListData> = {
       {
         id: 'focus',
         name: '  ',
+        source: 'kg',
         locationUpdateTime: null,
         list: [{ id: 'focus-song', name: 'Focus Song' }],
       },
@@ -36,16 +37,31 @@ const head: SnapshotRecord<ListData> = {
 
 describe('playlist management projections', () => {
   it('summarizes built-in and user playlists from the current list head', () => {
-    expect(playlistSummaryResponse(head)).toEqual({
+    expect(
+      playlistSummaryResponse(head, new Map([['focus', 'hires']])),
+    ).toEqual({
       snapshotId: head.id,
       snapshotCreatedAt: '2026-07-23T02:00:00.000Z',
       data: [
-        { id: 'default', name: '默认列表', type: 'default', songCount: 2 },
-        { id: 'love', name: '收藏列表', type: 'love', songCount: 1 },
+        {
+          id: 'default',
+          name: '默认列表',
+          type: 'default',
+          quality: null,
+          songCount: 2,
+        },
+        {
+          id: 'love',
+          name: '收藏列表',
+          type: 'love',
+          quality: null,
+          songCount: 1,
+        },
         {
           id: 'user:focus',
           name: '未命名歌单',
           type: 'user',
+          quality: 'hires',
           songCount: 1,
         },
       ],
@@ -54,11 +70,16 @@ describe('playlist management projections', () => {
 
   it('normalizes only public song fields while preserving source positions', () => {
     expect(
-      playlistDetailResponse(head, 'default', {
-        q: '',
-        offset: 1,
-        limit: 1,
-      }),
+      playlistDetailResponse(
+        head,
+        'default',
+        {
+          q: '',
+          offset: 1,
+          limit: 1,
+        },
+        new Map([['focus', 'hires']]),
+      ),
     ).toMatchObject({
       playlist: {
         id: 'default',

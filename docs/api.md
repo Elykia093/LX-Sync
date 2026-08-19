@@ -48,7 +48,7 @@ JSON 请求体为空或语法无效时返回 `400 INVALID_JSON`；请求体超�
 | GET | `/api/v1/users/:userId/playlists` | 无 | `200 { snapshotId, snapshotCreatedAt, data: PlaylistSummary[] }` | 400, 401, 404, 409 |
 | GET | `/api/v1/users/:userId/playlists/:playlistId` | 必填 `snapshotId`（UUID）；可选 `q`、`singer`、`albumName`（各最大 256 字符）、`source`（`kw/kg/tx/wy/mg`）、`offset`（默认 0、最大 10000）、`limit`（默认 50、最大 100） | `200 { snapshotId, snapshotCreatedAt, playlist, offset, limit, total, data: PlaylistSong[] }` | 400, 401, 404, 409 |
 | POST | `/api/v1/users/:userId/playlists` | `{ name, expectedSnapshotId }` | `201 { snapshotId, snapshotCreatedAt, playlist }` | 400, 401, 403, 404, 409, 413 |
-| PATCH | `/api/v1/users/:userId/playlists/:playlistId` | `{ name, expectedSnapshotId }` | `200 { snapshotId, snapshotCreatedAt, playlist }` | 400, 401, 403, 404, 409, 413 |
+| PATCH | `/api/v1/users/:userId/playlists/:playlistId` | `{ name, quality?, expectedSnapshotId }`，`quality` 可选为七档音质值或 `null` | `200 { snapshotId, snapshotCreatedAt, playlist }` | 400, 401, 403, 404, 409, 413 |
 | DELETE | `/api/v1/users/:userId/playlists/:playlistId` | `{ expectedSnapshotId }` | `200 { snapshotId, snapshotCreatedAt }` | 400, 401, 403, 404, 409, 413 |
 | POST | `/api/v1/users/:userId/playlists/:playlistId/songs` | `{ id, source, name, singer, albumName?, interval?, expectedSnapshotId }` | `201 { snapshotId, snapshotCreatedAt, affectedSongCount: 1 }` | 400, 401, 403, 404, 409, 413 |
 | DELETE | `/api/v1/users/:userId/playlists/:playlistId/songs` | `{ songIds, expectedSnapshotId }` | `200 { snapshotId, snapshotCreatedAt, affectedSongCount }` | 400, 401, 403, 404, 409, 413 |
@@ -63,17 +63,31 @@ JSON 请求体为空或语法无效时返回 `400 INVALID_JSON`；请求体超�
 
 ### 歌单读取与管理
 
-歌单摘要读取当前 `list` head，并返回可用于后续详情读取或写入比较的 `snapshotId`。摘要固定包含内置歌单 `default`、`love`，以及按同步顺序排列、对外 ID 为 `user:${rawId}` 的自建歌单。
+歌单摘要读取当前 `list` head，并返回可用于后续详情读取或写入比较的 `snapshotId`。摘要固定包含内置歌单 `default`、`love`，以及按同步顺序排列、对外 ID 为 `user:${rawId}` 的自建歌单。每个摘要包含 `quality`（`128k`、`320k`、`flac`、`hires`、`atmos`、`atmos_plus`、`master` 或 `null`），表示该歌单的首选音质；内置歌单固定为 `null`。歌曲详情中的 `source` 仍表示歌曲的平台来源。
 
 歌曲详情必须使用 `GET /api/v1/users/:userId/playlists/:playlistId?snapshotId=<uuid>[&q=<text>][&source=wy][&singer=<text>][&albumName=<text>][&offset=0][&limit=50]` 并显式传入摘要返回的 `snapshotId`；未启用的可选筛选参数应省略，未知查询参数返回 `400 VALIDATION_FAILED`。服务端始终读取该用户 `list` 域中的指定不可变快照，不会在分页或搜索期间悄悄切换到当前 head；快照不存在时返回 `404 SNAPSHOT_NOT_FOUND`。歌曲明细只返回 `id`、原列表 `position`、`name`、`singer`、`albumName`、`source`、`interval`，其中 JSON `id` 保持 `string | number`。除 `id` 外的旧快照字段可能缺失，此时返回 `null`。`q` 对歌曲 ID、名称、歌手、专辑和来源做不区分大小写的包含搜索；可选 `source` 对 `kw`、`kg`、`tx`、`wy`、`mg` 做精确筛选，`singer` 与 `albumName` 做不区分大小写的包含筛选，多个条件按 AND 组合。搜索范围固定为路径指定的单个歌单，返回的 `position` 仍是歌曲在该歌单原快照中的位置。
 
 所有歌单写接口都必须携带当前 `list` head 的 `expectedSnapshotId`。如果 head 已变化或该 ID 已过期，返回 `409 SNAPSHOT_CONFLICT`；客户端必须重新读取摘要并让管理员基于新快照重试。新建和改名后的歌单名称长度为 1–64 个字符。内置歌单允许移除、移动和复制歌曲，但不允许改名、删除歌单本体或通过管理端新增歌曲，违反时返回 `409 PLAYLIST_IMMUTABLE`。歌单不存在时返回 `404 PLAYLIST_NOT_FOUND`；同一快照内存在重复的自建歌单原始 ID、无法唯一解析 `user:${rawId}` 时，歌单摘要、详情和写接口均返回 `409 PLAYLIST_ID_AMBIGUOUS`。自建歌单 raw ID 为 LX 保留值 `default` 或 `love` 时仍可改名或删除，但涉及歌曲的新增、移除、移动和复制会返回同一歧义错误，避免 wire action 错误命中内置歌单。新建操作超过 100 个自建歌单，或新增/复制操作会使快照超过合计 10,000 首歌曲时，返回 `409 PLAYLIST_CAPACITY_EXCEEDED`，且不写入快照或审计。
 
+歌单 PATCH 必须提供名称，`quality` 缺失表示保留原设置，传 `null` 表示清除设置；字符串只接受上文列出的七档音质值，不接受空字符串。名称仍通过 LX `list_update` 动作保存，首选音质写入独立偏好表，原有 `source`、`sourceListId` 和其他歌单元数据保持不变。
+
 管理端新增歌曲只接受白名单结构，不接受客户端直接提交任意 `MusicInfo` 或扩展 metadata。`source` 必须是 `kw`、`kg`、`tx`、`wy`、`mg` 之一；`id` 表示该来源的平台歌曲 ID，允许至少包含一个 ASCII 字母或数字、且其余字符仅为 ASCII 字母、数字、下划线或连字符的字符串，或大于 0 的安全整数，并保持 JSON `string | number` 原始类型。服务端拒绝 `unknown`、`local`、`temp`、`undefined`、`null` 等伪 ID、这些值的下划线或连字符前缀形式、仅由分隔符组成的值、路径和带扩展名的文件名。`name` 与 `singer` 为裁剪后 1–256 字符，`albumName` 可选且最多 256 字符，`interval` 可省略或使用 `m:ss`/`mm:ss`/`mmm:ss` 形式。服务端会从这些字段生成同时包含 LX 当前 `meta.songId`/`meta.albumName` 和旧客户端基础字段的受控歌曲对象，但不会访问第三方平台验证歌曲是否真实存在，也不会补齐音质、封面或来源专属播放 metadata。目标歌单已有相同类型、相同 `id` 时返回 `409 SONG_ALREADY_EXISTS`；数字 `2` 与字符串 `"2"` 仍是不同 ID。
 
 `songIds` 是非空且元素唯一的数组，每个元素允许为 JSON `string | number`；请求数组自身包含重复值时返回 `400 VALIDATION_FAILED`。服务端从 `expectedSnapshotId` 对应的当前 head 中恢复完整 `MusicInfo`，不信任客户端提交的歌曲对象；任一歌曲在来源歌单不存在时返回 `404 SONG_NOT_FOUND`，同一请求 ID 在来源歌单命中多首歌曲时返回 `409 SONG_ID_AMBIGUOUS`。移动和复制的 `targetPlaylistId` 使用与摘要相同的歌单 ID，目标不存在时同样返回 `404 PLAYLIST_NOT_FOUND`；来源与目标相同则返回 `409 PLAYLIST_TARGET_INVALID`。`affectedSongCount` 等于校验通过的请求歌曲数。
 
-写接口沿用管理 Cookie、精确 `Origin` 校验、strict 请求 schema、Problem JSON 和 `Cache-Control: no-store`。每次成功写入都在同一 PostgreSQL 事务中锁定对应 head 行、执行 CAS、写入或复用内容相同的不可变快照、切换 head、按保留策略裁剪快照并写入审计；业务写入与审计要么同时成功，要么同时回滚。审计 action 分别为 `playlist.create`、`playlist.rename`、`playlist.delete`、`playlist.songs.add`、`playlist.songs.remove`、`playlist.songs.move` 和 `playlist.songs.copy`。审计 metadata 只能包含 `domain`、`affectedSongCount` 等受控域信息和计数，不包含歌名、歌曲或歌单原始 ID，也不包含客户端 payload。
+写接口沿用管理 Cookie、精确 `Origin` 校验、strict 请求 schema、Problem JSON 和 `Cache-Control: no-store`。每次成功写入都在同一 PostgreSQL 事务中锁定对应 head 行、执行 CAS、写入或复用内容相同的不可变快照、切换 head、按保留策略裁剪快照并写入审计；业务写入与审计要么同时成功，要么同时回滚。审计 action 分别为 `playlist.create`、`playlist.rename`、`playlist.update`、`playlist.delete`、`playlist.songs.add`、`playlist.songs.remove`、`playlist.songs.move` 和 `playlist.songs.copy`。`playlist.update` 用于管理端替换歌单首选音质。审计 metadata 只能包含 `domain`、`affectedSongCount` 等受控域信息和计数，不包含歌名、歌曲或歌单原始 ID，也不包含客户端 payload。
+
+歌单更新使用 `PATCH /api/v1/users/:userId/playlists/:playlistId`，请求体示例：
+
+```json
+{
+  "name": "通勤歌单",
+  "quality": "hires",
+  "expectedSnapshotId": "..."
+}
+```
+
+`quality` 缺失时保留原设置，传 `null` 清除首选音质。首选音质保存在管理端独立偏好表中，不写入 LX v4 wire 快照；歌单原有 `source` 和 `sourceListId` 保持不变，因此不会破坏移动端同步。该设置是歌单当前偏好，不属于历史快照：读取旧快照时会叠加当前偏好，同一快照内容上的并发偏好更新按最后一次事务提交结果生效。歌单被管理端或 LX 客户端删除，以及恢复到不包含该歌单的历史快照时，相关偏好会在同一事务中清理。
 
 快照保存成功后，服务端在同一用户级串行任务内向该用户所有已完成 `list` 初始化且已就绪的在线连接广播。每个客户端确认接收后才推进该设备 baseline；离线、未就绪或发送失败的设备不推进，发送失败的连接会被关闭。
 

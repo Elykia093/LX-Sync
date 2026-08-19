@@ -1,4 +1,5 @@
 import type { ColumnType, Generated } from 'kysely'
+import type { PlaylistQuality } from '../playlist-quality.js'
 import type { AddMusicLocationType, SyncDomain } from '../protocol/index.js'
 
 type Timestamp = ColumnType<Date, Date | string | undefined, Date | string>
@@ -84,6 +85,13 @@ export interface AuditEventsTable {
   createdAt: Timestamp
 }
 
+export interface PlaylistPreferencesTable {
+  userId: string
+  playlistId: string
+  quality: PlaylistQuality
+  updatedAt: Timestamp
+}
+
 export interface Database {
   serviceMetadata: ServiceMetadataTable
   syncUsers: SyncUsersTable
@@ -93,4 +101,5 @@ export interface Database {
   deviceSyncState: DeviceSyncStateTable
   adminSessions: AdminSessionsTable
   auditEvents: AuditEventsTable
+  playlistPreferences: PlaylistPreferencesTable
 }

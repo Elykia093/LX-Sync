@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest'
 import {
   type AuditEventInput,
+  type PlaylistQualityUpdate,
   SnapshotConflictError,
   type SnapshotRecord,
   type UserSummary,
 } from '../db/repository.js'
 import type { AppError } from '../errors.js'
+import type { PlaylistQuality } from '../playlist-quality.js'
 import type {
   DislikeRules,
   ListAction,
@@ -37,6 +39,7 @@ class MemoryRepository {
   saveCalls = 0
   marks: Array<{ deviceId: string; snapshotId: string }> = []
   audits: AuditEventInput[] = []
+  qualities = new Map<string, PlaylistQuality>()
 
   readonly user: UserSummary = {
     id: 'user-id',
@@ -69,6 +72,7 @@ class MemoryRepository {
     data: ListData
     expectedSnapshotId?: string
     audit?: AuditEventInput
+    playlistQualityUpdate?: PlaylistQualityUpdate
   }): Promise<SnapshotRecord<ListData>>
   async saveSnapshot(input: {
     userId: string
@@ -76,6 +80,7 @@ class MemoryRepository {
     data: DislikeRules
     expectedSnapshotId?: string
     audit?: AuditEventInput
+    playlistQualityUpdate?: PlaylistQualityUpdate
   }): Promise<SnapshotRecord<DislikeRules>>
   async saveSnapshot(input: {
     userId: string
@@ -83,6 +88,7 @@ class MemoryRepository {
     data: ListData | DislikeRules
     expectedSnapshotId?: string
     audit?: AuditEventInput
+    playlistQualityUpdate?: PlaylistQualityUpdate
   }): Promise<SnapshotRecord> {
     if (input.domain !== 'list' || typeof input.data === 'string')
       throw new Error('Unexpected dislike write')
@@ -94,7 +100,18 @@ class MemoryRepository {
       `00000000-0000-4000-8000-${String(this.saveCalls + 1).padStart(12, '0')}`,
       input.data,
     )
+    if (input.playlistQualityUpdate) {
+      const { playlistId, quality } = input.playlistQualityUpdate
+      if (quality === null) this.qualities.delete(playlistId)
+      else this.qualities.set(playlistId, quality)
+    }
     return this.head
+  }
+
+  async getPlaylistQualities(
+    _userId: string,
+  ): Promise<Map<string, PlaylistQuality>> {
+    return new Map(this.qualities)
   }
 
   async markDeviceSnapshot(
@@ -531,6 +548,53 @@ describe('PlaylistManagementService', () => {
       sourceListId: 'remote-list',
       locationUpdateTime: 123,
     })
+  })
+
+  it('stores a playlist quality without changing the existing list source', async () => {
+    const actions: ListAction[] = []
+    const repository = new MemoryRepository(baseData())
+    const service = new PlaylistManagementService(
+      repository,
+      hub([connection({ actions })]),
+    )
+
+    const result = await service.rename({
+      userId: 'user-id',
+      actor: 'admin',
+      playlistId: 'user:target',
+      name: 'Target',
+      quality: 'hires',
+      expectedSnapshotId: repository.head.id,
+    })
+
+    expect(result.playlist).toMatchObject({
+      id: 'user:target',
+      quality: 'hires',
+    })
+    expect(repository.head.data.userList[0]).toMatchObject({
+      name: 'Target',
+      source: 'wy',
+      sourceListId: 'remote-list',
+    })
+    expect(actions).toEqual([
+      {
+        action: 'list_update',
+        data: [expect.objectContaining({ id: 'target', source: 'wy' })],
+      },
+    ])
+    expect(repository.qualities).toEqual(new Map([['target', 'hires']]))
+    expect(repository.audits).toEqual([
+      expect.objectContaining({ action: 'playlist.update' }),
+    ])
+
+    await service.delete({
+      userId: 'user-id',
+      actor: 'admin',
+      playlistId: 'user:target',
+      expectedSnapshotId: repository.head.id,
+    })
+    expect(repository.qualities).toEqual(new Map())
+    expect(repository.head.data.userList).toEqual([])
   })
 
   it('rejects immutable and ambiguous playlist targets', async () => {

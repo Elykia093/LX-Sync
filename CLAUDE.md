@@ -6,14 +6,14 @@
 
 LX-Sync 是面向 LX Music 的自托管同步服务，兼容 LX Music v4 的 HTTP 握手和 WebSocket 同步流程。它保存歌单与“不喜欢”规则，提供多设备合并、有限历史快照、设备撤销、快照恢复、审计记录和同源 React 管理端。
 
-- 当前项目版本：`0.4.0`。
+- 当前项目版本：`0.5.0`。
 - 当前阶段：SemVer `0.x.y` 初始开发阶段，README 标记为 Alpha。
 - 部署模型：单实例模块化单体。
 - 持久化事实源：PostgreSQL。
 - 管理端：同源 React SPA，不是公开或跨域管理 API。
 - 明确不在当前范围：Redis、多实例广播、消息队列、分布式锁、SSO/RBAC、SSR、移动端应用和 Kubernetes Chart。
 
-当前 `0.4.0` 是向后兼容功能发布，不改变 LX v4 wire format、管理 API 或 PostgreSQL schema。
+当前 `0.5.0` 是向后兼容功能发布，新增自建歌单首选音质管理和 PostgreSQL `playlist_preferences` 表；LX v4 wire format、握手文本和 `featureVersion` 保持不变。
 
 ## 2. 文档分工与证据优先级
 
@@ -30,12 +30,12 @@ LX-Sync 是面向 LX Music 的自托管同步服务，兼容 LX Music v4 的 HTT
 |---|---|
 | Runtime | Node.js 24.18.0 LTS、TypeScript 7.0.2、ES modules |
 | 包管理 | pnpm 11.14.0 workspace |
-| HTTP | Fastify 5.10.0、`@fastify/cookie`、`@fastify/static` |
-| WebSocket/RPC | `ws` 8.21.1、`message2call` 0.1.3 |
+| HTTP | Fastify 5.12.0、`@fastify/cookie` 11.1.2、`@fastify/static` 10.1.3 |
+| WebSocket/RPC | `ws` 8.21.3、`message2call` 0.1.3 |
 | 数据校验 | Zod 4.4.3 |
-| 数据库 | PostgreSQL 18、Kysely 0.29.4、`pg` 8.22.0 |
-| 前端 | React 19.2.7、React Router 7.18.1、TanStack Query 5.101.2、Vite 8.1.5 |
-| 质量 | Biome 2.5.4、Vitest 4.1.10、Playwright 1.61.1 |
+| 数据库 | PostgreSQL 18、Kysely 0.29.5、`pg` 8.23.0 |
+| 前端 | React 19.2.8、React Router 7.18.2、TanStack Query 5.101.4、Vite 8.2.1 |
+| 质量 | Biome 2.5.9、Vitest 4.1.10、Playwright 1.62.1 |
 | 容器 | 多阶段 Docker build、Compose、GHCR 多平台镜像 |
 
 依赖使用精确版本。`message2call@0.1.3` 是协议兼容基线，仓库补丁只修复其类型声明中的 `viod` 拼写，不改变运行时或 wire format。
@@ -102,7 +102,7 @@ Compose 固定 PostgreSQL 18-alpine OCI digest，等待数据库健康后启动�
 
 ### 6.2 管理 API v1
 
-管理 API 固定前缀 `/api/v1`，仅供同源 SPA 使用。主要资源包括 session、status、users、devices、playlists、snapshots 和 audit events。歌单管理复用 LX `ListAction` 和不可变快照模型：所有写请求携带 `expectedSnapshotId`，在用户级串行任务内执行 PostgreSQL head 行锁/CAS、快照与审计同事务写入，并向已就绪的在线 list 连接广播；客户端确认后才推进对应设备 baseline。详细字段与错误码见 `docs/api.md`。
+管理 API 固定前缀 `/api/v1`，仅供同源 SPA 使用。主要资源包括 session、status、users、devices、playlists、snapshots 和 audit events。歌单管理复用 LX `ListAction` 和不可变快照模型：所有写请求携带 `expectedSnapshotId`，在用户级串行任务内执行 PostgreSQL head 行锁/CAS、快照与审计同事务写入，并向已就绪的在线 list 连接广播；客户端确认后才推进对应设备 baseline。自建歌单首选音质是独立的当前偏好，不写入 LX wire 快照；旧快照读取叠加当前值。详细字段与错误码见 `docs/api.md`。
 
 所有非 GET/HEAD/OPTIONS 管理请求必须携带与 `PUBLIC_ORIGIN` 完全相同的 `Origin`。请求对象使用 strict Zod schema，未知字段被拒绝。API 返回 `Cache-Control: no-store`，错误统一为 `application/problem+json`，客户端按 `status` 和 `code` 分支。
 
@@ -162,6 +162,7 @@ Compose 固定 PostgreSQL 18-alpine OCI digest，等待数据库健康后启动�
 | `device_sync_state` | 每设备/域最近成功同步 snapshot；复合主键 |
 | `admin_sessions` | 只保存 session ID 的 SHA-256、绝对过期时间和最近访问 |
 | `audit_events` | 管理写操作的 actor、action、target 和受控 metadata |
+| `playlist_preferences` | 用户和自建歌单 raw ID 的复合主键、受 CHECK 约束的当前首选音质和更新时间；用户删除时级联 |
 
 应用代码使用 camelCase；`CamelCasePlugin` 映射 PostgreSQL snake_case。
 
@@ -172,9 +173,9 @@ Compose 固定 PostgreSQL 18-alpine OCI digest，等待数据库健康后启动�
 - 创建用户、list 初始 head、dislike 初始 head 和对应审计在一个事务内。
 - 注册设备先锁定用户行，再统计未撤销设备，单用户上限 100。
 - 用户更新、设备撤销、session 创建/删除、快照恢复与对应审计保持同事务。
-- `saveSnapshot()` 在一个事务内锁 head、验证 CAS、去重写 snapshot、切换 head、按需更新来源设备 baseline，并裁剪历史。
+- `saveSnapshot()` 在一个事务内锁 head、验证 CAS、去重写 snapshot、切换 head、按需更新来源设备 baseline、写入歌单音质偏好、清理已不存在歌单的偏好，并裁剪历史。
 - 裁剪不能删除当前 head 或任何设备 baseline 仍引用的 snapshot。
-- restore 只切换 head 并递增 version，不改写历史 snapshot；执行前会断开该用户在线连接。
+- restore 只切换 head 并递增 version，不改写历史 snapshot；恢复 list 时同步清理目标快照中已不存在歌单的当前音质偏好，执行前会断开该用户在线连接。
 
 除非同时补齐数据库并发测试，不得把这些步骤拆出事务或移除行锁/CAS。管理写操作涉及审计时，业务写和审计必须共同成功或共同回滚。
 

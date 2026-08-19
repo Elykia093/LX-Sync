@@ -20,6 +20,7 @@ interface MockPlaylist {
   id: string
   name: string
   type: 'default' | 'love' | 'user'
+  quality: string | null
   songs: MockSong[]
 }
 
@@ -65,7 +66,10 @@ test('管理员可创建、改名、删除歌单并批量复制、移动、移�
     await expect(page.getByRole('button', { name: /临时歌单/ })).toBeVisible()
 
     await page.getByLabel('歌单名称', { exact: true }).fill('已重命名歌单')
-    await page.getByRole('button', { name: '保存名称' }).click()
+    await page.getByLabel('首选音质').selectOption('hires')
+    await page.getByRole('button', { name: '保存修改' }).click()
+    await expect.poll(() => mutationCount(state, 'rename')).toBe(1)
+    expect(lastMutation(state, 'rename')?.body.quality).toBe('hires')
     await expect(
       page.getByRole('button', { name: /已重命名歌单/ }),
     ).toBeVisible()
@@ -190,7 +194,7 @@ test('管理员可创建、改名、删除歌单并批量复制、移动、移�
     state.failNextRename = true
     const playlistReadsBeforeConflictRefresh = state.playlistReads
     await page.getByLabel('歌单名称', { exact: true }).fill('冲突名称')
-    await page.getByRole('button', { name: '保存名称' }).click()
+    await page.getByRole('button', { name: '保存修改' }).click()
     await expect(page.getByRole('alert')).toContainText(
       '歌单已被其他设备或管理员更新，请刷新后重新操作。',
     )
@@ -204,7 +208,7 @@ test('管理员可创建、改名、删除歌单并批量复制、移动、移�
     await expect(page.getByLabel('歌单名称', { exact: true })).toHaveValue(
       '冲突名称',
     )
-    await page.getByRole('button', { name: '保存名称' }).click()
+    await page.getByRole('button', { name: '保存修改' }).click()
     await expect(page.getByRole('button', { name: /冲突名称/ })).toBeVisible()
     expect(state.renameRequests).toBe(3)
 
@@ -568,6 +572,7 @@ function createMockState(extraPlaylistCount: number): MockState {
       id: `user:extra-${index + 1}`,
       name: `扩展歌单 ${index + 1}`,
       type: 'user',
+      quality: null,
       songs: [],
     }),
   )
@@ -576,6 +581,7 @@ function createMockState(extraPlaylistCount: number): MockState {
       id: 'default',
       name: '默认列表',
       type: 'default',
+      quality: null,
       songs: [
         song(2, '数字歌曲'),
         song('2', '字符串歌曲'),
@@ -593,12 +599,14 @@ function createMockState(extraPlaylistCount: number): MockState {
       id: 'love',
       name: '收藏列表',
       type: 'love',
+      quality: null,
       songs: [],
     },
     {
       id: 'user:target',
       name: '目标歌单',
       type: 'user',
+      quality: null,
       songs: [],
     },
     ...extraPlaylists,
@@ -712,6 +720,7 @@ async function handleApi(route: Route, state: MockState): Promise<void> {
       id: 'user:created',
       name: stringField(body, 'name'),
       type: 'user',
+      quality: null,
       songs: [],
     }
     state.playlists.push(playlist)
@@ -758,6 +767,8 @@ async function handleApi(route: Route, state: MockState): Promise<void> {
         return
       }
       playlist.name = stringField(body, 'name')
+      if (typeof body.quality === 'string' || body.quality === null)
+        playlist.quality = body.quality
       state.mutations.push({ action: 'rename', body })
       advanceSnapshot(state)
       await route.fulfill({ json: upsertResponse(state, playlist) })
@@ -914,6 +925,7 @@ function playlistSummary(playlist: MockPlaylist) {
     id: playlist.id,
     name: playlist.name,
     type: playlist.type,
+    quality: playlist.quality,
     songCount: playlist.songs.length,
   }
 }

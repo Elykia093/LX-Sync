@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import type { AppConfig } from '../config.js'
-import type { AuditEventInput, SnapshotRecord } from '../db/repository.js'
+import type {
+  AuditEventInput,
+  PlaylistQualityUpdate,
+  SnapshotRecord,
+} from '../db/repository.js'
 import { SnapshotConflictError } from '../db/repository.js'
+import type { PlaylistQuality } from '../playlist-quality.js'
 import type { DislikeRules, ListData, SyncDomain } from '../protocol/index.js'
 import { type AppDependencies, buildApp } from './app.js'
 
@@ -63,6 +68,7 @@ async function createFixture(
   snapshots.set(head.id, head)
   let saves = 0
   const audits: AuditEventInput[] = []
+  const playlistQualities = new Map<string, PlaylistQuality>()
   const repositoryUserIds: string[] = []
   const exclusiveUserIds: string[] = []
   const broadcastUserIds: string[] = []
@@ -73,6 +79,7 @@ async function createFixture(
     data: ListData
     expectedSnapshotId?: string
     audit?: AuditEventInput
+    playlistQualityUpdate?: PlaylistQualityUpdate
   }): Promise<SnapshotRecord<ListData>>
   async function saveSnapshot(input: {
     userId: string
@@ -80,6 +87,7 @@ async function createFixture(
     data: DislikeRules
     expectedSnapshotId?: string
     audit?: AuditEventInput
+    playlistQualityUpdate?: PlaylistQualityUpdate
   }): Promise<SnapshotRecord<DislikeRules>>
   async function saveSnapshot(input: {
     userId: string
@@ -87,6 +95,7 @@ async function createFixture(
     data: ListData | DislikeRules
     expectedSnapshotId?: string
     audit?: AuditEventInput
+    playlistQualityUpdate?: PlaylistQualityUpdate
   }): Promise<SnapshotRecord> {
     if (input.domain !== 'list' || typeof input.data === 'string')
       throw new Error('Unexpected dislike write')
@@ -99,6 +108,11 @@ async function createFixture(
     )
     snapshots.set(head.id, head)
     if (input.audit) audits.push(input.audit)
+    if (input.playlistQualityUpdate) {
+      const { playlistId, quality } = input.playlistQualityUpdate
+      if (quality === null) playlistQualities.delete(playlistId)
+      else playlistQualities.set(playlistId, quality)
+    }
     return head
   }
 
@@ -159,6 +173,7 @@ async function createFixture(
       repositoryUserIds.push(requestedUserId)
       return head
     },
+    getPlaylistQualities: async () => new Map(playlistQualities),
     saveSnapshot,
     markDeviceSnapshot: async () => {},
     listSnapshots: async () => [],
@@ -208,6 +223,7 @@ async function createFixture(
     broadcastUserIds,
     getHead: () => head,
     getSaveCount: () => saves,
+    getPlaylistQualities: () => new Map(playlistQualities),
   }
 }
 
@@ -366,6 +382,88 @@ describe('playlist management HTTP API', () => {
       }),
     ])
     expect(JSON.stringify(fixture.audits)).not.toContain('Road trip')
+  })
+
+  it('updates a user playlist quality without changing the LX source fields', async () => {
+    const fixture = await createFixture({
+      defaultList: [],
+      loveList: [],
+      userList: [
+        {
+          id: 'target',
+          name: 'Target',
+          source: 'wy',
+          sourceListId: 'remote-list',
+          locationUpdateTime: null,
+          list: [],
+        },
+      ],
+    })
+    const headers = { cookie: fixture.cookie, origin: config.PUBLIC_ORIGIN }
+    const response = await fixture.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/users/${userId}/playlists/user%3Atarget`,
+      headers,
+      payload: {
+        name: 'Target',
+        quality: 'hires',
+        expectedSnapshotId: initialSnapshotId,
+      },
+    })
+
+    expect(response.statusCode).toBe(200)
+    expect(response.json().playlist).toMatchObject({
+      id: 'user:target',
+      quality: 'hires',
+    })
+    expect(fixture.getHead().data.userList[0]).toMatchObject({
+      source: 'wy',
+      sourceListId: 'remote-list',
+    })
+    expect(fixture.audits).toEqual([
+      expect.objectContaining({ action: 'playlist.update' }),
+    ])
+
+    const invalid = await fixture.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/users/${userId}/playlists/user%3Atarget`,
+      headers,
+      payload: {
+        name: 'Target',
+        quality: 'invalid',
+        expectedSnapshotId: fixture.getHead().id,
+      },
+    })
+    expect(invalid.statusCode).toBe(400)
+    expect(invalid.json().code).toBe('VALIDATION_FAILED')
+
+    const createWithQuality = await fixture.app.inject({
+      method: 'POST',
+      url: `/api/v1/users/${userId}/playlists`,
+      headers,
+      payload: {
+        name: 'Unexpected quality',
+        quality: 'hires',
+        expectedSnapshotId: fixture.getHead().id,
+      },
+    })
+    expect(createWithQuality.statusCode).toBe(400)
+    expect(createWithQuality.json().code).toBe('VALIDATION_FAILED')
+    expect(fixture.getSaveCount()).toBe(1)
+
+    const clear = await fixture.app.inject({
+      method: 'PATCH',
+      url: `/api/v1/users/${userId}/playlists/user%3Atarget`,
+      headers,
+      payload: {
+        name: 'Target',
+        quality: null,
+        expectedSnapshotId: fixture.getHead().id,
+      },
+    })
+    expect(clear.statusCode).toBe(200)
+    expect(clear.json().playlist.quality).toBeNull()
+    expect(fixture.getPlaylistQualities().has('target')).toBe(false)
   })
 
   it('adds a strictly validated platform song to a user playlist', async () => {

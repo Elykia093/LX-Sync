@@ -38,10 +38,21 @@ const snapshotSchema = z.object({
   sourceDeviceId: z.string().nullable(),
   createdAt: timestampSchema,
 })
+const managedSongSourceSchema = z.enum(['kw', 'kg', 'tx', 'wy', 'mg'])
+const playlistQualitySchema = z.enum([
+  '128k',
+  '320k',
+  'flac',
+  'hires',
+  'atmos',
+  'atmos_plus',
+  'master',
+])
 const playlistSummarySchema = z.object({
   id: z.string(),
   name: z.string(),
   type: z.enum(['default', 'love', 'user']),
+  quality: playlistQualitySchema.nullable().default(null),
   songCount: z.number().int().min(0),
 })
 const playlistSongSchema = z.object({
@@ -77,7 +88,6 @@ const playlistUpsertSchema = playlistMutationSchema.extend({
 const playlistSongMutationSchema = playlistMutationSchema.extend({
   affectedSongCount: z.number().int().min(0),
 })
-const managedSongSourceSchema = z.enum(['kw', 'kg', 'tx', 'wy', 'mg'])
 const auditEventSchema = z.object({
   id: z.string(),
   actor: z.string(),
@@ -105,6 +115,7 @@ export type PlaylistList = z.infer<typeof playlistListSchema>
 export type PlaylistDetail = z.infer<typeof playlistDetailSchema>
 export type AuditEvent = z.infer<typeof auditEventSchema>
 export type ManagedSongSource = z.infer<typeof managedSongSourceSchema>
+export type PlaylistQuality = z.infer<typeof playlistQualitySchema>
 
 export interface AddPlaylistSongInput {
   id: string | number
@@ -303,7 +314,11 @@ export const api = {
   renamePlaylist: (
     userId: string,
     playlistId: string,
-    input: { name: string; expectedSnapshotId: string },
+    input: {
+      name: string
+      quality?: PlaylistQuality | null
+      expectedSnapshotId: string
+    },
   ) =>
     request(
       `/users/${encoded(userId)}/playlists/${encoded(playlistId)}`,

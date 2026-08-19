@@ -34,7 +34,7 @@ flowchart LR
 
 ## 技术栈
 
-以下版本按 2026-08-19 的稳定/LTS 线精确锁定，不追 Current、RC 或 nightly。CI、容器与本地开发默认只验证表中的当前锁定基线；旧版本、旧发行变体和旧工具链不再作为适配目标。升级仍必须固定具体版本与 OCI digest，不能使用漂移的 `latest`。Docker Engine / Compose 一行记录的是本次测试服务器基线，GitHub-hosted runner 的 Docker 版本由平台管理：
+以下版本按 2026-08-19 的稳定/LTS 线精确锁定，不追 Current、RC 或 nightly。CI、容器与本地开发默认只验证表中的当前锁定基线；旧版本、旧发行变体和旧工具链不再作为适配目标。升级仍必须固定具体版本与 OCI digest；`latest` 仅用于已验证主干构建的测试或临时验证，不作为生产唯一引用。Docker Engine / Compose 一行记录的是本次测试服务器基线，GitHub-hosted runner 的 Docker 版本由平台管理：
 
 | 层 | 版本 |
 |---|---:|
@@ -302,9 +302,9 @@ docker compose exec db pg_restore --exit-on-error --no-owner --no-privileges -U 
 
 - 影响镜像的 PR 默认只预构建 `linux/amd64`、`linux/arm64`，不登录仓库或推送制品。同仓库 PR 显式添加 `publish-image` 标签后，会发布 `pr-<PR 编号>` 和 SHA 测试标签；fork PR 无论标签如何都只有只读构建权限。
 - `pr-<PR 编号>` 会随 PR 更新，是便于测试的可变标签；需要固定测试输入时，应从发布摘要取得 digest 并使用 `ghcr.io/elykia093/lx-sync@sha256:<digest>`。手动触发仍只执行源码、PostgreSQL 和构建验证，不发布镜像。
-- 推送 `main` 会发布 `edge` 和 `sha-<完整提交 SHA>` 标签；`edge` 仅用于跟踪主干，不应作为生产部署标识。
+- 推送 `main` 会发布 `latest`、`edge` 和 `sha-<完整提交 SHA>` 标签；`latest`/`edge` 仅用于测试或跟踪主干，不应作为生产部署标识。
 - 推送 `v*.*.*` tag 时，tag 必须精确等于 `v${package.json.version}`，根 package、server package 与 web package 版本必须一致，且目标 commit 必须可从 `origin/main` 到达；通过后发布完整语义版本、`major.minor` 和 SHA 标签。
-- PostgreSQL 18-alpine service 以 OCI digest 固定，并作为唯一数据库测试基线。工作流显式禁用 `latest`，先只推送 `candidate-<提交 SHA>`，用 `imagetools inspect` 确认 manifest 同时包含 amd64 与 arm64，并为该 digest 发布 SBOM 和 GitHub provenance attestation；全部成功后才提升 edge/semver/SHA 正式标签并逐一确认仍指向同一 digest。
+- PostgreSQL 18-alpine service 以 OCI digest 固定，并作为唯一数据库测试基线。工作流先只推送 `candidate-<提交 SHA>`，用 `imagetools inspect` 确认 manifest 同时包含 amd64 与 arm64，并为该 digest 发布 SBOM 和 GitHub provenance attestation；全部成功后才提升主干的 `latest`/`edge` 或版本/SHA 正式标签，并逐一确认仍指向同一 digest。
 - 发布摘要会记录不可变 digest。生产部署与回滚必须使用 `ghcr.io/elykia093/lx-sync@sha256:<digest>`，不能只依赖可变标签。仓库内 `compose.yaml` 的 `lx-sync:local` 是本地源码构建标签，不代表已发布的 GHCR 制品。
 
 GitHub ruleset、tag 保护、required checks、GHCR 可见性和保留策略属于仓库外配置，工作流无法自行证明它们已启用。首次发布前应至少将上述 CI check 设为合并门禁，限制 release tag 的创建权限，并确认 GHCR 不会清理仍用于回滚的 digest。回滚应用时切换到上一条已验证 digest；数据库迁移仍按前述兼容性判断决定回滚或 roll-forward。

@@ -316,10 +316,10 @@ release workflow 在 tag 事件中读取三者；任一不一致即失败。tag 
 `.github/workflows/release.yml` 当前行为：
 
 - PR 默认只验证 `linux/amd64`、`linux/arm64` 构建；同仓库 PR 带 `publish-image` 标签才发布 PR/SHA 测试标签，fork PR 保持只读。
-- `main` push 发布 `edge` 和完整 SHA 标签。
+- `main` push 发布 `latest`、`edge` 和完整 SHA 标签；`latest` 仅供测试或临时验证使用。
 - `v*.*.*` tag 通过版本与 main 可达性门禁后，发布完整 SemVer、`major.minor` 和 SHA 标签。
 - workflow 先推 `candidate-<commit SHA>`，验证 manifest 包含 amd64/arm64，并为同一 digest 生成 SBOM 与 GitHub provenance attestation，之后才提升最终标签。
-- `latest` 明确禁用。
+- `latest` 仅由已验证的 `main` 构建生成，供测试或临时验证使用；生产部署和回滚必须固定不可变 digest。
 - 最终标签逐一解析并确认仍指向 build 输出的同一 digest。
 
 `edge`、PR tag、SemVer tag 和 `major.minor` tag 都是名称引用；生产发布证据必须记录 immutable digest。已发布 tag 不得移动或复用。
@@ -334,6 +334,6 @@ release workflow 在 tag 事件中读取三者；任一不一致即失败。tag 
 | 管理 API | `docs/api.md`、Origin/session、安全响应、web Zod schema 和缓存失效 |
 | session/auth/security | Cookie、日志脱敏、密钥备份、限流和 E2E |
 | web query/mutation | query key、401 清理、mutation 重试和受保护缓存 |
-| Docker/workflow/version | 三 manifest 一致、tag、main 可达、同一 digest、SBOM/provenance、无 `latest` |
+| Docker/workflow/version | 三 manifest 一致、tag、main 可达、同一 digest、SBOM/provenance、latest 仅作主干辅助标签 |
 
 任何不确定的协议、数据或发布变更，先按更高风险分类并补证据；不要用当前 `0.x` 阶段掩盖迁移影响。

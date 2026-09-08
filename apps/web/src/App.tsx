@@ -156,7 +156,9 @@ export function App() {
     refetchInterval: 60_000,
   })
   useEffect(() => {
-    const expireSession = () => applyLoggedOutState(queryClient)
+    const expireSession = () => {
+      void applyLoggedOutState(queryClient)
+    }
     window.addEventListener(sessionExpiredEventName, expireSession)
     return () =>
       window.removeEventListener(sessionExpiredEventName, expireSession)
@@ -1131,6 +1133,7 @@ function PlaylistManager({ userId }: { userId: string }) {
     null,
   )
   const [createName, setCreateName] = useState('')
+  const [playlistDraftId, setPlaylistDraftId] = useState<string | null>(null)
   const [renameName, setRenameName] = useState('')
   const [playlistQuality, setPlaylistQuality] = useState<PlaylistQuality | ''>(
     '',
@@ -1215,9 +1218,10 @@ function PlaylistManager({ userId }: { userId: string }) {
     if (nextOffset !== offset) setOffset(nextOffset)
   }, [offset, songs.data])
   useEffect(() => {
+    setPlaylistDraftId(activePlaylist?.id ?? null)
     setRenameName(activePlaylist?.name ?? '')
     setPlaylistQuality(activePlaylist?.quality ?? '')
-  }, [activePlaylist?.name, activePlaylist?.quality])
+  }, [activePlaylist?.id, activePlaylist?.name, activePlaylist?.quality])
   const selectionScope = `${activePlaylistId ?? ''}\u0000${snapshotId}\u0000${songQuery}\u0000${songSourceQuery}\u0000${songSingerQuery}\u0000${songAlbumQuery}\u0000${offset}`
   const selectedSongIds =
     songSelection.scope === selectionScope ? songSelection.ids : []
@@ -1452,7 +1456,13 @@ function PlaylistManager({ userId }: { userId: string }) {
   const submitRenamePlaylist = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
     const name = renameName.trim()
-    if (!name || !snapshotId || !activePlaylistId) return
+    if (
+      !name ||
+      !snapshotId ||
+      !activePlaylistId ||
+      playlistDraftId !== activePlaylistId
+    )
+      return
     resetMutationErrors()
     renamePlaylist.mutate({
       playlistId: activePlaylistId,
@@ -1800,6 +1810,7 @@ function PlaylistManager({ userId }: { userId: string }) {
                 disabled={
                   !renameName.trim() ||
                   !snapshotId ||
+                  playlistDraftId !== activePlaylistId ||
                   (renameName.trim() === activePlaylist.name &&
                     playlistQuality === (activePlaylist.quality ?? '')) ||
                   activeMutationPending
@@ -2506,7 +2517,11 @@ export function playlistOffsetForTotal(
   return Math.floor((total - 1) / pageSize) * pageSize
 }
 
-export function applyLoggedOutState(queryClient: QueryClient): void {
+export async function applyLoggedOutState(
+  queryClient: QueryClient,
+): Promise<void> {
+  // Let already-settled requests finish before replacing their cached state.
+  await queryClient.cancelQueries()
   queryClient.removeQueries({
     predicate: (query) => query.queryKey[0] !== queryKeys.session[0],
   })

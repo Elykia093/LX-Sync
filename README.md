@@ -5,7 +5,7 @@
 > [!IMPORTANT]
 > 本项目是非官方实现，与 LX Music / 洛雪音乐助手及其作者没有隶属或背书关系。当前状态为 **Alpha**，请先在非关键数据上验证，并建立可恢复备份。
 
-当前版本说明：[LX-Sync v0.5.0](docs/releases/v0.5.0.md)。
+当前版本说明：[LX-Sync v0.6.0](docs/releases/v0.6.0.md)。
 
 ## 能做什么
 
@@ -160,7 +160,9 @@ pnpm --filter @lx-sync/server test:integration
 
 协议 E2E 的测试客户端固定于上述 LX v4 参考提交，自行实现握手常量、AES/MD5 和 `cg_` gzip codec，不导入服务端的协议或安全运行时代码；套件同时覆盖小型 message2call raw frame 与双向压缩帧，避免客户端和服务端同源漂移后仍一起通过。
 
-浏览器 E2E 需要先完成 `pnpm build`，并为服务端提供 `DATABASE_URL`、`MASTER_KEY`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`NODE_ENV=test`、`PUBLIC_ORIGIN=http://127.0.0.1:9527` 等测试环境变量。Playwright 会启动构建后的服务、等待 `/health/ready`，随后验证错误登录、管理员登录、用户创建、设置持久化、歌单创建与歌曲新增、组合筛选、快照导出、审计记录和退出登录；禁止指向生产数据库。覆盖率 HTML 报告位于 `coverage/server` 和 `coverage/web`，浏览器 HTML 报告位于 `playwright-report`，失败时 trace、video 与 screenshot 位于 `test-results`。CI 使用一次性 PostgreSQL 18 服务并上传这些报告。
+浏览器 E2E 需要先完成 `pnpm build`，并为服务端提供 `DATABASE_URL`、`MASTER_KEY`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`NODE_ENV=test`、`PUBLIC_ORIGIN=http://127.0.0.1:9527` 等测试环境变量。`DATABASE_URL` 的数据库名必须包含独立的 `test` 段（如 `lx_sync_test`），并设置 `ALLOW_TEST_DATABASE_WRITE=1`；缺失开关或指向非测试库会在配置加载时失败。Playwright 会启动构建后的服务、等待 `/health/ready`，随后验证错误登录、管理员登录、用户创建、设置持久化、歌单创建与歌曲新增、组合筛选、快照导出、审计记录和退出登录。真实模式不复用已有服务，也不接受 `E2E_SKIP_WEBSERVER=1`。
+
+只验证模拟 API 下的管理端交互时，可设置 `$env:E2E_MOCK_WEB_SERVER='1'` 后运行 `pnpm test:e2e`；该模式启动 Vite，仅执行 `*.mock.spec.ts`，无需数据库。它覆盖歌单编辑、会话失效等浏览器状态回归，不能替代真实 PostgreSQL E2E。覆盖率 HTML 报告位于 `coverage/server` 和 `coverage/web`，浏览器 HTML 报告位于 `playwright-report`，失败时 trace、video 与 screenshot 位于 `test-results`。CI 使用一次性 PostgreSQL 18 服务并上传这些报告。
 
 ## 环境变量
 
@@ -198,6 +200,8 @@ pnpm --filter @lx-sync/server test:integration
 快照写入和 head 切换位于同一数据库事务，并对 head 加锁；并发修改发生冲突时，同步引擎最多重新合并 3 次。默认容量假设是单实例、低并发家庭/小团队部署（不超过约 100 个同步用户、每用户 100 台有效设备、默认每域 10 个历史快照）；这不是压测结论。更大规模需要先验证 payload 大小、连接数、数据库锁等待、存储增长和恢复时间。
 
 单条 LX WebSocket 消息压缩前和解压后均限制为 8 MiB；单个快照最多包含 100 个自建歌单和合计 10,000 首歌曲，嵌套 JSON 也有深度、节点数、属性数与字符串长度上限。超过边界的连接会被拒绝，不会写入快照。
+
+每条连接的入站解析队列最多容纳 32 条消息、16 MiB 原始数据；已解析但尚未完成的 RPC 另有 32 条、16 MiB 解压后数据的预算。出站队列最多容纳 256 条消息、16 MiB 压缩前数据，单帧压缩前后及 socket 缓冲仍受 8 MiB 限制。超限或断线会停用连接并丢弃未开始的任务；客户端重连后依靠已持久化的快照和设备基线继续同步。
 
 ## 反向代理示例
 

@@ -81,6 +81,7 @@ jobs:
         env:
           ADMIN_PASSWORD: e2e-admin-password-2026
           ADMIN_USERNAME: e2e-admin
+          ALLOW_TEST_DATABASE_WRITE: '1'
           DATABASE_URL: postgresql://lx_sync:integration-test-password@127.0.0.1:5432/lx_sync_test
           HOST: 127.0.0.1
           LOG_LEVEL: silent

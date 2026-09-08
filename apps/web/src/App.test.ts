@@ -21,7 +21,7 @@ import {
 } from './api.js'
 
 describe('applyLoggedOutState', () => {
-  it('removes protected cache data and exposes an explicit logged-out state', () => {
+  it('removes protected cache data and exposes an explicit logged-out state', async () => {
     const queryClient = new QueryClient()
     const session: Session = {
       username: 'admin',
@@ -30,10 +30,97 @@ describe('applyLoggedOutState', () => {
     queryClient.setQueryData(queryKeys.session, session)
     queryClient.setQueryData(queryKeys.users, { data: [{ id: 'private' }] })
 
-    applyLoggedOutState(queryClient)
+    await applyLoggedOutState(queryClient)
 
     expect(queryClient.getQueryData(queryKeys.session)).toBeNull()
     expect(queryClient.getQueryData(queryKeys.users)).toBeUndefined()
+  })
+
+  it('keeps logout state when earlier session and protected queries finish', async () => {
+    const queryClient = new QueryClient()
+    const session: Session = {
+      username: 'admin',
+      expiresAt: '2026-07-18T00:00:00.000Z',
+    }
+    const sessionResponse = Promise.withResolvers<Session>()
+    const usersResponse = Promise.withResolvers<{ data: { id: string }[] }>()
+    queryClient.setQueryData(queryKeys.session, session)
+    queryClient.setQueryData(queryKeys.users, { data: [{ id: 'private' }] })
+    const pending = Promise.allSettled([
+      queryClient.fetchQuery({
+        queryKey: queryKeys.session,
+        queryFn: () => sessionResponse.promise,
+      }),
+      queryClient.fetchQuery({
+        queryKey: queryKeys.users,
+        queryFn: () => usersResponse.promise,
+      }),
+    ])
+
+    await applyLoggedOutState(queryClient)
+    expect(queryClient.getQueryData(queryKeys.session)).toBeNull()
+
+    sessionResponse.resolve(session)
+    usersResponse.resolve({ data: [{ id: 'private' }] })
+    await pending
+
+    expect(queryClient.getQueryData(queryKeys.session)).toBeNull()
+    expect(queryClient.getQueryData(queryKeys.users)).toBeUndefined()
+    expect(queryClient.getQueryState(queryKeys.session)?.fetchStatus).toBe(
+      'idle',
+    )
+    queryClient.clear()
+  })
+
+  it('preserves a new login while an earlier session query settles', async () => {
+    const queryClient = new QueryClient()
+    const oldSession: Session = {
+      username: 'admin',
+      expiresAt: '2026-07-18T00:00:00.000Z',
+    }
+    const newSession: Session = {
+      ...oldSession,
+      expiresAt: '2026-07-19T00:00:00.000Z',
+    }
+    const response = Promise.withResolvers<Session>()
+    queryClient.setQueryData(queryKeys.session, oldSession)
+    const pending = Promise.allSettled([
+      queryClient.fetchQuery({
+        queryKey: queryKeys.session,
+        queryFn: () => response.promise,
+      }),
+    ])
+
+    await applyLoggedOutState(queryClient)
+    queryClient.setQueryData(queryKeys.session, newSession)
+    response.resolve(oldSession)
+    await pending
+
+    expect(queryClient.getQueryData(queryKeys.session)).toEqual(newSession)
+    expect(queryClient.getQueryState(queryKeys.session)?.error).toBeNull()
+    queryClient.clear()
+  })
+
+  it('keeps logout state when a session response settles just before logout', async () => {
+    const queryClient = new QueryClient()
+    const session: Session = {
+      username: 'admin',
+      expiresAt: '2026-07-18T00:00:00.000Z',
+    }
+    const response = Promise.withResolvers<Session>()
+    queryClient.setQueryData(queryKeys.session, session)
+    const pending = queryClient.fetchQuery({
+      queryKey: queryKeys.session,
+      queryFn: () => response.promise,
+    })
+
+    response.resolve(session)
+    await Promise.resolve()
+    await applyLoggedOutState(queryClient)
+    await pending
+
+    expect(queryClient.getQueryData(queryKeys.session)).toBeNull()
+    queryClient.clear()
   })
 
   it('uses the login surface for unauthenticated or unavailable sessions', () => {

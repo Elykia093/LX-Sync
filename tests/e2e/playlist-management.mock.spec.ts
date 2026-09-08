@@ -44,6 +44,132 @@ interface MockState {
   unhandled: string[]
 }
 
+test('切换同名同音质歌单时丢弃旧草稿，即使歌曲详情仍在加载', async ({
+  page,
+}) => {
+  const state = await installMockApi(page, 1)
+  const playlists = state.playlists.filter(
+    (playlist) => playlist.type === 'user',
+  )
+  for (const playlist of playlists) {
+    playlist.name = '同名歌单'
+    playlist.quality = 'flac'
+  }
+  state.snapshots.set(state.snapshotId, clonePlaylists(state.playlists))
+  const browserErrors = collectBrowserErrors(page)
+  const detailResponse = Promise.withResolvers<void>()
+  const detailPath = `/api/v1/users/${userId}/playlists/user:extra-1`
+  await page.route(
+    (url) => decodeURIComponent(url.pathname) === detailPath,
+    async (route) => {
+      await detailResponse.promise
+      await route.fallback()
+    },
+  )
+
+  try {
+    await page.goto(`/users/${userId}#user-playlists`)
+    const playlistButtons = page
+      .getByRole('complementary', { name: '歌单列表' })
+      .getByRole('button', { name: /同名歌单/ })
+    await playlistButtons.nth(0).click()
+    await expect(page.getByLabel('歌单名称', { exact: true })).toHaveValue(
+      '同名歌单',
+    )
+    await page.getByLabel('歌单名称', { exact: true }).fill('未保存的名称')
+    await page.getByLabel('首选音质').selectOption('hires')
+
+    const detailRequest = page.waitForRequest(
+      (request) =>
+        decodeURIComponent(new URL(request.url()).pathname) === detailPath,
+    )
+    await playlistButtons.nth(1).click()
+    await detailRequest
+    await expect(page.getByText('正在加载歌曲…', { exact: true })).toBeVisible()
+    await expect(page.getByLabel('歌单名称', { exact: true })).toHaveValue(
+      '同名歌单',
+    )
+    await expect(page.getByLabel('首选音质')).toHaveValue('flac')
+    await expect(page.getByRole('button', { name: '保存修改' })).toBeDisabled()
+    expect(state.mutations).toEqual([])
+  } finally {
+    detailResponse.resolve()
+  }
+
+  await expect(
+    page.getByText('该歌单暂无歌曲。', { exact: true }),
+  ).toBeVisible()
+  expect(state.unhandled).toEqual([])
+  expect(browserErrors).toEqual([])
+})
+
+for (const trigger of ['退出登录', '受保护请求失效'] as const) {
+  test(`${trigger}后，迟到的会话轮询不能重新打开管理端`, async ({ page }) => {
+    const state = await installMockApi(page)
+    const browserErrors = collectBrowserErrors(page)
+    const sessionResponse = Promise.withResolvers<void>()
+    let holdSessionResponse = false
+    await page.clock.install()
+    await page.route('**/api/v1/auth/session', async (route) => {
+      if (holdSessionResponse) await sessionResponse.promise
+      await route.fallback()
+    })
+
+    try {
+      await page.goto(`/users/${userId}`)
+      await expect(
+        page.getByRole('heading', { name: '测试用户', exact: true }),
+      ).toBeVisible()
+      holdSessionResponse = true
+      const pollRequest = page.waitForRequest(
+        (request) => new URL(request.url()).pathname === '/api/v1/auth/session',
+      )
+      await page.clock.fastForward(60_000)
+      await pollRequest
+
+      if (trigger === '退出登录') {
+        await page.route('**/api/v1/auth/logout', (route) =>
+          route.fulfill({ status: 204 }),
+        )
+        await page.getByRole('button', { name: '退出登录' }).click()
+      } else {
+        await page.route(`**/api/v1/users/${userId}/playlists`, (route) =>
+          fulfillProblem(route, 401, 'AUTH_INVALID'),
+        )
+        await page.getByRole('button', { name: '刷新', exact: true }).click()
+      }
+      await expect(
+        page.getByRole('heading', { name: '登录你的账号' }),
+      ).toBeVisible()
+
+      const lateResponse = page.waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname === '/api/v1/auth/session',
+      )
+      sessionResponse.resolve()
+      await (await lateResponse).finished()
+      await page.clock.runFor(1_000)
+      await expect(
+        page.getByRole('heading', { name: '登录你的账号' }),
+      ).toBeVisible()
+      await expect(
+        page.getByRole('heading', { name: '测试用户', exact: true }),
+      ).toHaveCount(0)
+    } finally {
+      sessionResponse.resolve()
+    }
+
+    expect(state.unhandled).toEqual([])
+    const expectedNetworkError =
+      trigger === '受保护请求失效'
+        ? 'Failed to load resource: the server responded with a status of 401 (Unauthorized)'
+        : null
+    expect(
+      browserErrors.filter((error) => error !== expectedNetworkError),
+    ).toEqual([])
+  })
+}
+
 test('管理员可创建、改名、删除歌单并批量复制、移动、移除歌曲', async ({
   page,
 }, testInfo) => {

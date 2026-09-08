@@ -6,14 +6,14 @@
 
 LX-Sync 是面向 LX Music 的自托管同步服务，兼容 LX Music v4 的 HTTP 握手和 WebSocket 同步流程。它保存歌单与“不喜欢”规则，提供多设备合并、有限历史快照、设备撤销、快照恢复、审计记录和同源 React 管理端。
 
-- 当前项目版本：`0.5.0`。
+- 当前项目版本：`0.6.0`。
 - 当前阶段：SemVer `0.x.y` 初始开发阶段，README 标记为 Alpha。
 - 部署模型：单实例模块化单体。
 - 持久化事实源：PostgreSQL。
 - 管理端：同源 React SPA，不是公开或跨域管理 API。
 - 明确不在当前范围：Redis、多实例广播、消息队列、分布式锁、SSO/RBAC、SSR、移动端应用和 Kubernetes Chart。
 
-当前 `0.5.0` 是向后兼容功能发布，新增自建歌单首选音质管理和 PostgreSQL `playlist_preferences` 表；LX v4 wire format、握手文本和 `featureVersion` 保持不变。
+当前 `0.6.0` 加固 WebSocket 队列和连接生命周期，修复管理端歌单草稿与退出登录竞态，并补齐浏览器测试的数据库保护。沿用 `0.5.0` 的歌单首选音质功能和 `playlist_preferences` 表，没有新增迁移；LX v4 wire format、握手文本和 `featureVersion` 保持不变。
 
 ## 2. 文档分工与证据优先级
 
@@ -129,10 +129,12 @@ Compose 固定 PostgreSQL 18-alpine OCI digest，等待数据库健康后启动�
 - `message2call@0.1.3` 提供 base、`list` queue 和 `dislike` queue。
 - `LX_SYNC.featureVersion` 当前为 `list: 1`、`dislike: 1`。
 - 超过 1024 字符的 JSON frame 使用 `cg_` + gzip + Base64；小 frame 保持原始 JSON。
-- WebSocket `maxPayload`、解压输出和出站 buffered amount 上限均为 8 MiB。
-- 入站消息和出站发送分别串行化，RPC timeout 为 120 秒。
+- WebSocket `maxPayload`、解压输出、出站压缩前后消息和 buffered amount 上限均为 8 MiB。
+- 入站解析队列最多 32 条 / 16 MiB；解码后尚未完成的 RPC 另受 32 条 / 16 MiB 预算限制，响应包继续正常处理。未完成的重复 RPC ID 被拒绝。
+- 出站发送队列最多 256 条 / 16 MiB，等待 socket 写入回调后才释放容量。两侧队列分别串行化，RPC timeout 为 120 秒。
+- 超限、传输错误或断连立即停用连接、清除就绪状态、移出 registry、丢弃未开始的排队任务并销毁 RPC。异步初始化每次等待后检查 socket，避免登记幽灵连接。
 - server 每 30 秒 ping；移动设备额外接收文本 `ping`。
-- 同一设备建立新连接前，旧连接先被停用并等待该用户的在途任务完成。
+- 同一设备建立新连接前，旧连接先被停用并等待该用户的在途任务完成；登记时同步复核并替换同设备连接，避免并发握手双活，后续业务仍经用户级队列串行执行。
 
 ### 7.4 同步与冲突
 
@@ -214,7 +216,7 @@ Fastify logger 遮盖 `req.url`、Authorization、Cookie 和 Set-Cookie。同步
 - `status`、`users`、`devices(userId)`、`snapshots(userId, domain)`、`audit` 使用稳定 query key。
 - 创建/更新/撤销/恢复成功后只失效相关 query。
 - 登录成功直接写 session cache。
-- 登出成功或受保护 API 返回 401 时，移除所有受保护 cache，再把 session 明确写成 `null`。
+- 登出成功或受保护 API 返回 401 时，先取消并等待在途查询结算，再移除所有受保护 cache、把 session 明确写成 `null`，防止旧会话响应恢复登录状态。
 
 React `useState` 只用于 sidebar、复制提示和表单等局部 UI 状态。`apps/web/src/api.ts` 对所有成功响应使用 Zod 解析，对错误解析 Problem JSON；缺失的旧 server 可选字段通过 schema default 兼容为 `null`。
 
@@ -233,7 +235,9 @@ BrowserRouter 路由为 dashboard `/`、用户详情 `/users/:userId` 和审计 
 | `pnpm build` | server JS 与 web 静态产物 |
 | `pnpm check` | lint、typecheck、test、build |
 
-真实 PostgreSQL 测试有双重安全门：`TEST_DATABASE_URL` 的数据库名必须明确包含 `test`，且 `ALLOW_TEST_DATABASE_WRITE=1`。测试创建随机 schema 并清理；禁止指向生产库。
+真实 PostgreSQL 协议测试使用 `TEST_DATABASE_URL`，浏览器 E2E 使用 `DATABASE_URL`；两者的数据库名均须包含独立 `test` 段，且要求 `ALLOW_TEST_DATABASE_WRITE=1`。协议测试创建随机 schema 并清理；禁止指向生产库。
+
+浏览器 E2E 必须由 Playwright 启动本次构建后的服务，不复用已有服务，也不支持真实模式的 `E2E_SKIP_WEBSERVER=1`。`E2E_MOCK_WEB_SERVER=1` 只发现 `*.mock.spec.ts`，无需数据库，不能替代真实管理员旅程验证。
 
 协议集成客户端独立实现握手常量、AES/MD5 和 `cg_` codec，不导入 server 协议/安全运行时代码，防止实现和测试同源漂移。核心覆盖包括双域同步与广播、并发 CAS、事务步骤失败回滚、message2call 0.1.3 frame、消息大小、鉴权、日志脱敏和前端 session cache 清理。
 

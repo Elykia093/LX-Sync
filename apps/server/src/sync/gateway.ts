@@ -3,7 +3,7 @@ import type { Server as HttpServer, IncomingMessage } from 'node:http'
 import type { Socket } from 'node:net'
 import type { FastifyBaseLogger } from 'fastify'
 import { createMsg2call } from 'message2call'
-import { WebSocket, WebSocketServer } from 'ws'
+import { type RawData, WebSocket, WebSocketServer } from 'ws'
 import type { DeviceRecord, Repository } from '../db/repository.js'
 import { LX_SYNC } from '../protocol/index.js'
 import { decodeWireMessage, encodeWireMessage } from '../security/crypto.js'
@@ -16,6 +16,7 @@ import {
   userLogReference,
 } from './logging.js'
 import { resolveSyncPath } from './path.js'
+import { QueueOverflowError, SerialQueue } from './queue.js'
 import type {
   ClientDislikeRemote,
   ClientListRemote,
@@ -27,6 +28,10 @@ import { parseMessage2CallMessage } from './validation.js'
 
 const maxPayloadBytes = 8 * 1024 * 1024
 const maxBufferedBytes = 8 * 1024 * 1024
+const maxInboundQueuedMessages = 32
+const maxInboundQueuedBytes = 16 * 1024 * 1024
+const maxOutboundQueuedMessages = 256
+const maxOutboundQueuedBytes = 16 * 1024 * 1024
 const shutdownGraceMs = 5_000
 
 export class ConnectionRegistry implements ConnectionHub {
@@ -34,6 +39,14 @@ export class ConnectionRegistry implements ConnectionHub {
   private readonly userTasks = new Map<string, Promise<void>>()
 
   add(connection: SyncConnection): void {
+    // Recheck synchronously after asynchronous device replacement has drained.
+    for (const existing of this.forUser(connection.user.id)) {
+      if (
+        existing !== connection &&
+        existing.device.clientId === connection.device.clientId
+      )
+        this.deactivate(existing)
+    }
     const current =
       this.connections.get(connection.user.id) ?? new Set<SyncConnection>()
     current.add(connection)
@@ -143,62 +156,166 @@ export function createLxGateway(input: {
     deviceValue: unknown,
     pathMode: 'root' | 'scoped',
   ): Promise<void> {
+    const connectedAt = Date.now()
+    const connectionId = randomUUID()
+    let disconnected = false
+    let connection: SyncConnection | undefined
+    let destroyRpc: (() => void) | undefined
+    const logContext = {
+      connectionId,
+      pathMode,
+      ...(isAuthenticatedDevice(deviceValue)
+        ? {
+            userRef: userLogReference(deviceValue.userId),
+            deviceRef: deviceLogReference(deviceValue.clientId),
+          }
+        : {}),
+    }
+    const inbound = new SerialQueue({
+      maxTasks: maxInboundQueuedMessages,
+      maxBytes: maxInboundQueuedBytes,
+    })
+    const outbound = new SerialQueue({
+      maxTasks: maxOutboundQueuedMessages,
+      maxBytes: maxOutboundQueuedBytes,
+    })
+    const pendingCalls = new Map<string, number>()
+    let pendingCallBytes = 0
+    const isOpen = () => !disconnected && socket.readyState === WebSocket.OPEN
+    const deactivate = () => {
+      if (disconnected) return
+      disconnected = true
+      inbound.close()
+      outbound.close()
+      pendingCalls.clear()
+      pendingCallBytes = 0
+      if (connection) {
+        connection.active = false
+        connection.moduleReady.list = false
+        connection.moduleReady.dislike = false
+        registry.remove(connection)
+      }
+      destroyRpc?.()
+    }
+    const closeConnection = (code: number) => {
+      deactivate()
+      socket.close(code)
+    }
+
+    // Register before the first await: the peer can fail or leave during lookup.
+    socket.on('error', (error: unknown) => {
+      input.logger.warn(
+        {
+          ...logContext,
+          event: 'sync.connection.error',
+          ...syncErrorLogContext(error),
+        },
+        'LX WebSocket transport failed',
+      )
+      closeConnection(LX_SYNC.closeCode.failed)
+    })
+    socket.once('close', (code) => {
+      deactivate()
+      input.logger.info(
+        {
+          ...logContext,
+          event: 'sync.connection.closed',
+          code,
+          durationMs: Date.now() - connectedAt,
+        },
+        'LX device disconnected',
+      )
+    })
+
     if (!isAuthenticatedDevice(deviceValue)) {
-      socket.close(LX_SYNC.closeCode.failed)
+      closeConnection(LX_SYNC.closeCode.failed)
       return
     }
     const device = deviceValue
     const user = await input.repository.getUser(device.userId)
-    if (!user) {
-      socket.close(LX_SYNC.closeCode.failed)
+    if (!isOpen()) return
+    if (!user?.enabled) {
+      closeConnection(LX_SYNC.closeCode.failed)
       return
     }
-    const connectionId = randomUUID()
-    const logContext = {
-      connectionId,
-      pathMode,
-      userRef: userLogReference(user.id),
-      deviceRef: deviceLogReference(device.clientId),
-    }
-    const connectedAt = Date.now()
 
     await registry.closeDevice(device.userId, device.clientId)
+    if (!isOpen()) return
     alive.set(socket, true)
     socket.on('pong', () => alive.set(socket, true))
 
-    let disconnected = false
-    let connection: SyncConnection
-    let outbound = Promise.resolve()
     const msg2call = createMsg2call<ClientRemote>({
       funcsObj: {
         onFeatureChanged: (feature: unknown) =>
-          engine.featureChanged(connection, feature),
+          engine.featureChanged(activeConnection, feature),
         onListSyncAction: (action: unknown) =>
-          engine.applyList(connection, action),
+          engine.applyList(activeConnection, action),
         onDislikeSyncAction: (action: unknown) =>
-          engine.applyDislike(connection, action),
+          engine.applyDislike(activeConnection, action),
       },
       timeout: 120_000,
       sendMessage(message) {
-        if (disconnected) throw new Error('Disconnected')
-        outbound = outbound
-          .then(async () => {
-            const payload = await encodeWireMessage(JSON.stringify(message))
-            if (socket.bufferedAmount > maxBufferedBytes)
-              throw new Error('LX WebSocket outbound buffer limit exceeded')
-            if (socket.readyState === WebSocket.OPEN) socket.send(payload)
-          })
-          .catch((error: unknown) => {
-            input.logger.warn(
-              {
-                ...logContext,
-                event: 'sync.message.send_failed',
-                ...syncErrorLogContext(error),
-              },
-              'LX WebSocket send failed',
-            )
-            socket.close(LX_SYNC.closeCode.failed)
-          })
+        if (!message.path && typeof message.name === 'string') {
+          const cost = pendingCalls.get(message.name)
+          if (cost !== undefined) {
+            pendingCalls.delete(message.name)
+            pendingCallBytes -= cost
+          }
+        }
+        if (!isOpen()) {
+          // Reject outbound calls without throwing from message2call's detached
+          // response handler, including calls created after disconnection.
+          deactivate()
+          destroyRpc?.()
+          return
+        }
+        try {
+          const serialized = JSON.stringify(message)
+          const bytes = Buffer.byteLength(serialized)
+          if (bytes > maxPayloadBytes)
+            throw new RangeError('LX WebSocket message limit exceeded')
+          outbound.push(async () => {
+            if (!isOpen()) return
+            try {
+              const payload = await encodeWireMessage(serialized)
+              if (!isOpen()) return
+              const wireBytes = Buffer.byteLength(payload)
+              if (wireBytes > maxPayloadBytes)
+                throw new RangeError('LX WebSocket message limit exceeded')
+              if (socket.bufferedAmount + wireBytes > maxBufferedBytes)
+                throw new Error('LX WebSocket outbound buffer limit exceeded')
+              await new Promise<void>((resolve, reject) => {
+                socket.send(payload, (error) => {
+                  if (error) reject(error)
+                  else resolve()
+                })
+              })
+            } catch (error: unknown) {
+              input.logger.warn(
+                {
+                  ...logContext,
+                  event: 'sync.message.send_failed',
+                  ...syncErrorLogContext(error),
+                },
+                'LX WebSocket send failed',
+              )
+              closeConnection(LX_SYNC.closeCode.failed)
+            }
+          }, bytes)
+        } catch (error: unknown) {
+          input.logger.warn(
+            {
+              ...logContext,
+              event:
+                error instanceof QueueOverflowError
+                  ? 'sync.outbound.overflow'
+                  : 'sync.message.send_failed',
+              ...syncErrorLogContext(error),
+            },
+            'LX WebSocket send rejected',
+          )
+          closeConnection(LX_SYNC.closeCode.failed)
+        }
       },
       onError(error) {
         input.logger.warn(
@@ -211,8 +328,9 @@ export function createLxGateway(input: {
         )
       },
     })
+    destroyRpc = msg2call.destroy
 
-    connection = {
+    const activeConnection: SyncConnection = {
       connectionId,
       pathMode,
       active: true,
@@ -223,64 +341,83 @@ export function createLxGateway(input: {
       remote: msg2call.remote,
       remoteList: msg2call.createQueueRemote<ClientListRemote>('list'),
       remoteDislike: msg2call.createQueueRemote<ClientDislikeRemote>('dislike'),
-      close: () => socket.close(LX_SYNC.closeCode.normal),
+      close: () => closeConnection(LX_SYNC.closeCode.normal),
     }
-    socketConnections.set(socket, connection)
-    registry.add(connection)
+    connection = activeConnection
+    socketConnections.set(socket, activeConnection)
+    registry.add(activeConnection)
     input.logger.info(
       {
-        ...syncLogContext(connection),
+        ...syncLogContext(activeConnection),
         event: 'sync.connection.opened',
         isMobile: device.isMobile,
       },
       'LX device connected',
     )
 
-    let inbound = Promise.resolve()
     socket.on('message', (data, isBinary) => {
+      if (!isOpen()) return
       if (isBinary) {
-        socket.close(LX_SYNC.closeCode.failed)
+        closeConnection(LX_SYNC.closeCode.failed)
         return
       }
-      inbound = inbound
-        .then(async () => {
-          const decoded = await decodeWireMessage(data.toString())
-          const message = parseMessage2CallMessage(
-            JSON.parse(decoded) as unknown,
-          )
-          msg2call.message(message)
-        })
-        .catch((error: unknown) => {
-          input.logger.warn(
-            {
-              ...logContext,
-              event: 'sync.message.rejected',
-              ...syncErrorLogContext(error),
-            },
-            'Invalid LX WebSocket message',
-          )
-          socket.close(LX_SYNC.closeCode.failed)
-        })
-    })
-
-    socket.once('close', (code) => {
-      disconnected = true
-      msg2call.destroy()
-      registry.remove(connection)
-      input.logger.info(
-        {
-          ...logContext,
-          event: 'sync.connection.closed',
-          code,
-          durationMs: Date.now() - connectedAt,
-        },
-        'LX device disconnected',
-      )
+      try {
+        inbound.push(async () => {
+          if (!isOpen()) return
+          try {
+            const decoded = await decodeWireMessage(data.toString())
+            if (!isOpen()) return
+            const bytes = Buffer.byteLength(decoded)
+            if (bytes > maxPayloadBytes)
+              throw new RangeError('LX WebSocket message limit exceeded')
+            const message = parseMessage2CallMessage(
+              JSON.parse(decoded) as unknown,
+            )
+            // Parsing can finish while the RPC still waits for the user's write
+            // queue. Charge it until its response, without blocking RPC replies.
+            if (message.path && message.name) {
+              if (pendingCalls.has(message.name))
+                throw new Error('Duplicate pending LX RPC call')
+              if (pendingCalls.size >= maxInboundQueuedMessages)
+                throw new QueueOverflowError('tasks', maxInboundQueuedMessages)
+              if (pendingCallBytes + bytes > maxInboundQueuedBytes)
+                throw new QueueOverflowError('bytes', maxInboundQueuedBytes)
+              pendingCalls.set(message.name, bytes)
+              pendingCallBytes += bytes
+            }
+            msg2call.message(message)
+          } catch (error: unknown) {
+            input.logger.warn(
+              {
+                ...logContext,
+                event:
+                  error instanceof QueueOverflowError
+                    ? 'sync.inbound.overflow'
+                    : 'sync.message.rejected',
+                ...syncErrorLogContext(error),
+              },
+              'Invalid LX WebSocket message',
+            )
+            closeConnection(LX_SYNC.closeCode.failed)
+          }
+        }, rawDataByteLength(data))
+      } catch (error: unknown) {
+        input.logger.warn(
+          {
+            ...logContext,
+            event: 'sync.inbound.overflow',
+            ...syncErrorLogContext(error),
+          },
+          'LX WebSocket inbound queue limit exceeded',
+        )
+        closeConnection(LX_SYNC.closeCode.failed)
+      }
     })
 
     try {
-      await engine.initialize(connection)
+      await engine.initialize(activeConnection)
     } catch (error) {
+      if (disconnected) return
       input.logger.warn(
         {
           ...logContext,
@@ -289,7 +426,7 @@ export function createLxGateway(input: {
         },
         'LX initial synchronization failed',
       )
-      socket.close(LX_SYNC.closeCode.failed)
+      closeConnection(LX_SYNC.closeCode.failed)
     }
   }
 
@@ -337,6 +474,7 @@ export function createLxGateway(input: {
 
   const heartbeat = setInterval(() => {
     for (const socket of webSockets.clients) {
+      if (socket.readyState !== WebSocket.OPEN) continue
       if (alive.get(socket) === false) {
         socket.terminate()
         continue
@@ -355,8 +493,11 @@ export function createLxGateway(input: {
     closing = (async () => {
       clearInterval(heartbeat)
       input.server.off('upgrade', upgrade)
-      for (const socket of webSockets.clients)
-        socket.close(LX_SYNC.closeCode.normal)
+      for (const socket of webSockets.clients) {
+        const connection = socketConnections.get(socket)
+        if (connection) connection.close()
+        else socket.close(LX_SYNC.closeCode.normal)
+      }
       await new Promise<void>((resolve, reject) => {
         const forceClose = setTimeout(() => {
           for (const socket of webSockets.clients) socket.terminate()
@@ -391,6 +532,12 @@ export function resolveUpgradeIp(input: {
     if (nearestClient) return nearestClient
   }
   return input.remoteAddress ?? 'unknown'
+}
+
+function rawDataByteLength(data: RawData): number {
+  if (Array.isArray(data))
+    return data.reduce((total, chunk) => total + chunk.byteLength, 0)
+  return data.byteLength
 }
 
 function isAuthenticatedDevice(value: unknown): value is DeviceRecord {

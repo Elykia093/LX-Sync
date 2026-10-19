@@ -2,6 +2,7 @@ import type { SnapshotRecord } from '../db/repository.js'
 import { AppError } from '../errors.js'
 import type { PlaylistQuality } from '../playlist-quality.js'
 import type { ListData, MusicInfo } from '../protocol/index.js'
+import { toUserListInfo } from '../sync/snapshot.js'
 
 export type PlaylistType = 'default' | 'love' | 'user'
 
@@ -90,6 +91,35 @@ export function playlistDetailResponse(
     limit: query.limit,
     total: songs.length,
     data: songs.slice(query.offset, query.offset + query.limit),
+  }
+}
+
+export function playlistExportResponse(
+  snapshot: SnapshotRecord<ListData>,
+  playlistId: string,
+  userId: string,
+) {
+  const record = playlistRecords(snapshot.data).find(
+    (playlist) => playlist.id === playlistId,
+  )
+  if (!record) return null
+
+  const { songs, wireId, quality: _quality, ...playlist } = record
+  const userPlaylist =
+    record.type === 'user'
+      ? snapshot.data.userList.find((item) => item.id === wireId)
+      : undefined
+  return {
+    format: 'lx-sync.playlist' as const,
+    version: 1 as const,
+    userId,
+    snapshotId: snapshot.id,
+    snapshotCreatedAt: snapshot.createdAt.toISOString(),
+    playlist: {
+      ...playlist,
+      metadata: userPlaylist ? toUserListInfo(userPlaylist) : null,
+    },
+    songs,
   }
 }
 

@@ -5,7 +5,9 @@
 > [!IMPORTANT]
 > 本项目是非官方实现，与 LX Music / 洛雪音乐助手及其作者没有隶属或背书关系。当前状态为 **Alpha**，请先在非关键数据上验证，并建立可恢复备份。
 
-当前版本说明：[LX-Sync v0.6.0](docs/releases/v0.6.0.md)。
+当前版本说明：[LX-Sync v0.7.0](docs/releases/v0.7.0.md)。
+
+本版本增加歌单首页/末页与跳页、单歌单完整 JSON 导出、复制预检查及新增/跳过数量反馈，并提供可选的本地 Prometheus/Grafana 监控栈。
 
 ## 能做什么
 
@@ -13,6 +15,8 @@
 - 同步歌单和“不喜欢”规则，处理多设备增量合并与冲突重试。
 - 用 PostgreSQL 保存每个同步域的当前 head、设备同步基线和有限历史快照。
 - 管理同步用户、连接访问码、设备撤销、歌单创建/名称和首选音质编辑/删除与歌曲批量移动/复制/移除、快照恢复、快照 JSON 导出和审计记录。
+- 歌单支持首页、末页和指定页跳转；复制前检查目标歌单已有歌曲，复制后分别显示实际新增和重复跳过数量。
+- 按指定快照导出单个完整歌单及歌曲元数据，导出范围不受当前分页或搜索条件影响；导出格式为 `lx-sync.playlist` v1，不包含独立保存的当前首选音质。
 - 使用不透明 HttpOnly Cookie 保护同源管理端。
 - 单容器运行 Fastify API、LX WebSocket 和 React 静态资源。
 
@@ -160,9 +164,9 @@ pnpm --filter @lx-sync/server test:integration
 
 协议 E2E 的测试客户端固定于上述 LX v4 参考提交，自行实现握手常量、AES/MD5 和 `cg_` gzip codec，不导入服务端的协议或安全运行时代码；套件同时覆盖小型 message2call raw frame 与双向压缩帧，避免客户端和服务端同源漂移后仍一起通过。
 
-浏览器 E2E 需要先完成 `pnpm build`，并为服务端提供 `DATABASE_URL`、`MASTER_KEY`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`NODE_ENV=test`、`PUBLIC_ORIGIN=http://127.0.0.1:9527` 等测试环境变量。`DATABASE_URL` 的数据库名必须包含独立的 `test` 段（如 `lx_sync_test`），并设置 `ALLOW_TEST_DATABASE_WRITE=1`；缺失开关或指向非测试库会在配置加载时失败。Playwright 会启动构建后的服务、等待 `/health/ready`，随后验证错误登录、管理员登录、用户创建、设置持久化、歌单创建与歌曲新增、组合筛选、快照导出、审计记录和退出登录。真实模式不复用已有服务，也不接受 `E2E_SKIP_WEBSERVER=1`。
+浏览器 E2E 需要先完成 `pnpm build`，并为服务端提供 `DATABASE_URL`、`MASTER_KEY`、`ADMIN_USERNAME`、`ADMIN_PASSWORD`、`NODE_ENV=test`、`PUBLIC_ORIGIN=http://127.0.0.1:9527` 等测试环境变量。`DATABASE_URL` 的数据库名必须包含独立的 `test` 段（如 `lx_sync_test`），并设置 `ALLOW_TEST_DATABASE_WRITE=1`；缺失开关或指向非测试库会在配置加载时失败。Playwright 会启动构建后的服务、等待 `/health/ready`，随后验证错误登录、管理员登录、用户创建、设置持久化、歌单创建与歌曲新增、组合筛选、单歌单全量导出、部分重复复制与刷新读回、快照导出、审计记录和退出登录。真实模式不复用已有服务，也不接受 `E2E_SKIP_WEBSERVER=1`。
 
-只验证模拟 API 下的管理端交互时，可设置 `$env:E2E_MOCK_WEB_SERVER='1'` 后运行 `pnpm test:e2e`；该模式启动 Vite，仅执行 `*.mock.spec.ts`，无需数据库。它覆盖歌单编辑、会话失效等浏览器状态回归，不能替代真实 PostgreSQL E2E。覆盖率 HTML 报告位于 `coverage/server` 和 `coverage/web`，浏览器 HTML 报告位于 `playwright-report`，失败时 trace、video 与 screenshot 位于 `test-results`。CI 使用一次性 PostgreSQL 18 服务并上传这些报告。
+只验证模拟 API 下的管理端交互时，可设置 `$env:E2E_MOCK_WEB_SERVER='1'` 后运行 `pnpm test:e2e`；该模式启动 Vite，仅执行 `*.mock.spec.ts`，无需数据库。它覆盖歌单编辑、首末页/跳页、复制预览与迟到响应、会话失效等浏览器状态回归，不能替代真实 PostgreSQL E2E。覆盖率 HTML 报告位于 `coverage/server` 和 `coverage/web`，浏览器 HTML 报告位于 `playwright-report`，失败时 trace、video 与 screenshot 位于 `test-results`。CI 使用一次性 PostgreSQL 18 服务并上传这些报告。
 
 ## 环境变量
 
@@ -202,6 +206,46 @@ pnpm --filter @lx-sync/server test:integration
 单条 LX WebSocket 消息压缩前和解压后均限制为 8 MiB；单个快照最多包含 100 个自建歌单和合计 10,000 首歌曲，嵌套 JSON 也有深度、节点数、属性数与字符串长度上限。超过边界的连接会被拒绝，不会写入快照。
 
 每条连接的入站解析队列最多容纳 32 条消息、16 MiB 原始数据；已解析但尚未完成的 RPC 另有 32 条、16 MiB 解压后数据的预算。出站队列最多容纳 256 条消息、16 MiB 压缩前数据，单帧压缩前后及 socket 缓冲仍受 8 MiB 限制。超限或断线会停用连接并丢弃未开始的任务；客户端重连后依靠已持久化的快照和设备基线继续同步。
+
+## 性能监控
+
+服务在 `/metrics` 端点暴露 Prometheus 格式的性能指标，用于监控 HTTP 延迟、WebSocket 连接数和同步操作健康度。
+
+### 可用指标
+
+| 指标名 | 类型 | 标签 | 说明 |
+|---|---|---|---|
+| `lx_sync_http_request_duration_seconds` | Histogram | `method`, `route`, `status_code` | HTTP 请求延迟分布（0.001s–5s 桶边界） |
+| `lx_sync_http_request_total` | Counter | `method`, `route`, `status_code` | HTTP 请求总数 |
+| `lx_sync_active_connections` | Gauge | - | 当前活跃 WebSocket 连接数 |
+| `lx_sync_websocket_connections_total` | Counter | `status` | WebSocket 连接尝试、成功与失败计数 |
+| `lx_sync_operation_duration_seconds` | Histogram | `operation` | 同步操作延迟（初始化、动作处理） |
+| `lx_sync_operation_total` | Counter | `operation`, `status` | 同步操作计数（`success` / `error`） |
+
+### 本地监控
+
+监控栈是可选的本地辅助服务，不包含在默认 `docker compose up` 中。启用前在 `.env` 设置 `GRAFANA_ADMIN_USER` 和唯一的长随机 `GRAFANA_ADMIN_PASSWORD`，然后运行：
+
+```powershell
+docker compose -f compose.yaml -f compose.monitoring.yml up -d
+```
+
+Prometheus 与 Grafana 仅绑定 `127.0.0.1`；数据源和仪表盘会自动配置。`/metrics` 本身没有鉴权；公开反向代理应拒绝该路径，并通过防火墙或网络策略限制对应用宿主端口的直连，避免绕过反代访问。此 overlay 供本机诊断使用；生产监控制品需单独固定为不可变 digest 并配置访问控制。
+
+### 告警规则
+
+已预配置 8 条告警（见 `alerts.yml`）：
+
+- **HighHTTPLatency**: P95 > 2s 持续 5 分钟
+- **HighHTTPErrorRate**: 5xx 率 > 5% 持续 5 分钟
+- **HighWebSocketConnections**: 连接数 > 100
+- **WebSocketConnectionSpike**: 一分钟内握手尝试超过 20 次
+- **HighSyncOperationFailureRate**: 同步失败率 > 5%
+- **SlowSyncOperations**: 平均延迟 > 3s
+- **NoSyncActivity**: 30 分钟无操作
+- **ServiceDown**: 无法抓取 /metrics 持续 1 分钟
+
+详细配置指南见 [docs/monitoring-setup.md](docs/monitoring-setup.md)，性能优化方案见 [docs/performance-optimization-plan.md](docs/performance-optimization-plan.md)。
 
 ## 反向代理示例
 
@@ -263,8 +307,6 @@ TRUST_PROXY=true
 ## 备份与恢复
 
 生产备份与隔离恢复演练按 [docs/backup-and-restore.md](docs/backup-and-restore.md) 执行。备份必须同时覆盖 PostgreSQL 和当前 `MASTER_KEY`，并把两者保存为使用不同凭据和加密仓库的独立恢复对象。
-
-从 `XCQ0607/lxserver v2.0.0` 文件数据目录迁移到空 LX-Sync 数据库时，按 [lxserver v2.0 迁移手册](docs/migrate-from-lxserver-v2.md) 先执行只读 dry-run，再在隔离环境验证后显式启用写入门禁。
 
 从官方 `lyswhut/lx-music-sync-server 2.1.2` 迁移时，按 [官方同步服务器迁移手册](docs/migrate-from-lx-music-sync-server.md) 同时提供完整 `DATA_PATH` 备份和受校验的 JSON 用户配置；工具不会执行旧 `config.js`。
 

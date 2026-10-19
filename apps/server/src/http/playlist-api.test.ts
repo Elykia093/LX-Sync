@@ -228,6 +228,407 @@ async function createFixture(
 }
 
 describe('playlist management HTTP API', () => {
+  it('exports a complete historical playlist with original metadata and a safe filename', async () => {
+    const metadata = {
+      id: 'focus/../../"\r\nX-Filename: injected',
+      name: '  历史 "歌单"\r\n名称  ',
+      source: 'wy' as const,
+      sourceListId: 'remote-list',
+      locationUpdateTime: 123,
+      extra: { retained: true, tags: ['original'] },
+    }
+    const songs = Array.from({ length: 125 }, (_, index) => ({
+      id: index === 0 ? 2 : `song-${index}`,
+      name: `Song ${index}`,
+      meta: { songId: index, albumName: 'Original album', extra: [true, 0] },
+      customField: { retained: true },
+    }))
+    const fixture = await createFixture({
+      defaultList: [{ id: 'other-playlist-song' }],
+      loveList: [],
+      userList: [{ ...metadata, list: songs }],
+    })
+    const playlistId = `user:${metadata.id}`
+    const playlistPath = `/api/v1/users/${userId}/playlists/${encodeURIComponent(playlistId)}`
+    const changed = await fixture.app.inject({
+      method: 'PATCH',
+      url: playlistPath,
+      headers: { cookie: fixture.cookie, origin: config.PUBLIC_ORIGIN },
+      payload: {
+        name: 'Current name',
+        quality: 'hires',
+        expectedSnapshotId: initialSnapshotId,
+      },
+    })
+    expect(changed.statusCode).toBe(200)
+    expect(fixture.getHead().id).not.toBe(initialSnapshotId)
+
+    const filtered = await fixture.app.inject({
+      method: 'GET',
+      url: `${playlistPath}?snapshotId=${initialSnapshotId}&q=Song%201&limit=1`,
+      headers: { cookie: fixture.cookie },
+    })
+    expect(filtered.statusCode).toBe(200)
+    expect(filtered.json().data).toHaveLength(1)
+
+    const response = await fixture.app.inject({
+      method: 'GET',
+      url: `${playlistPath}/export?snapshotId=${initialSnapshotId}`,
+      headers: { cookie: fixture.cookie },
+    })
+    expect(response.statusCode).toBe(200)
+    expect(response.headers['content-type']).toBe(
+      'application/json; charset=utf-8',
+    )
+    expect(response.headers['content-disposition']).toBe(
+      'attachment; filename="lx-sync-playlist.json"',
+    )
+    expect(response.headers['cache-control']).toBe('no-store')
+    expect(response.headers['x-content-type-options']).toBe('nosniff')
+    expect(response.json()).toEqual({
+      format: 'lx-sync.playlist',
+      version: 1,
+      userId,
+      snapshotId: initialSnapshotId,
+      snapshotCreatedAt: '2026-07-23T04:00:00.000Z',
+      playlist: {
+        id: playlistId,
+        type: 'user',
+        name: metadata.name.trim(),
+        songCount: songs.length,
+        metadata,
+      },
+      songs,
+    })
+    expect(fixture.getSaveCount()).toBe(1)
+    expect(fixture.audits).toHaveLength(1)
+    expect(fixture.broadcastUserIds).toEqual([userId])
+  })
+
+  it('exports built-in and reserved user playlist IDs independently', async () => {
+    const reserved = {
+      id: 'default',
+      name: 'Reserved user playlist',
+      locationUpdateTime: null,
+      list: [{ id: 'reserved-song', meta: { retained: true } }],
+    }
+    const fixture = await createFixture({
+      defaultList: [{ id: 2 }],
+      loveList: [],
+      userList: [reserved],
+    })
+    for (const [playlistId, songs, metadata] of [
+      ['default', [{ id: 2 }], null],
+      ['love', [], null],
+      [
+        'user:default',
+        reserved.list,
+        { id: reserved.id, name: reserved.name, locationUpdateTime: null },
+      ],
+    ] as const) {
+      const response = await fixture.app.inject({
+        method: 'GET',
+        url: `/api/v1/users/${userId}/playlists/${encodeURIComponent(playlistId)}/export?snapshotId=${initialSnapshotId}`,
+        headers: { cookie: fixture.cookie },
+      })
+      expect(response.statusCode).toBe(200)
+      expect(response.json()).toMatchObject({
+        playlist: { id: playlistId, songCount: songs.length, metadata },
+        songs,
+      })
+      expect(response.json().playlist).not.toHaveProperty('quality')
+    }
+    expect(fixture.getSaveCount()).toBe(0)
+    expect(fixture.audits).toEqual([])
+    expect(fixture.broadcastUserIds).toEqual([])
+  })
+
+  it('requires authenticated export and preview requests and strict export parameters', async () => {
+    const fixture = await createFixture()
+    const exportPath = `/api/v1/users/${userId}/playlists/default/export`
+    for (const query of [
+      '',
+      '?snapshotId=invalid',
+      `?snapshotId=${initialSnapshotId}&snapshotId=${initialSnapshotId}`,
+      ...[
+        'q=2',
+        'source=wy',
+        'singer=test',
+        'albumName=test',
+        'offset=0',
+        'limit=1',
+        'unknown=1',
+      ].map((query) => `?snapshotId=${initialSnapshotId}&${query}`),
+    ]) {
+      const response = await fixture.app.inject({
+        method: 'GET',
+        url: `${exportPath}${query}`,
+        headers: { cookie: fixture.cookie },
+      })
+      expect(response.statusCode).toBe(400)
+      expect(response.json().code).toBe('VALIDATION_FAILED')
+    }
+    const unauthorizedExport = await fixture.app.inject({
+      method: 'GET',
+      url: `${exportPath}?snapshotId=${initialSnapshotId}`,
+    })
+    expect(unauthorizedExport.statusCode).toBe(401)
+    expect(unauthorizedExport.json().code).toBe('AUTH_INVALID')
+    const unauthorizedPreview = await fixture.app.inject({
+      method: 'POST',
+      url: `/api/v1/users/${userId}/playlists/default/song-copy-previews`,
+      headers: { origin: config.PUBLIC_ORIGIN },
+      payload: {
+        targetPlaylistId: 'love',
+        songIds: [2],
+        expectedSnapshotId: initialSnapshotId,
+      },
+    })
+    expect(unauthorizedPreview.statusCode).toBe(401)
+    expect(unauthorizedPreview.json().code).toBe('AUTH_INVALID')
+    expect(fixture.getSaveCount()).toBe(0)
+  })
+
+  it('returns stable missing-resource and ambiguous-ID errors for playlist exports', async () => {
+    const fixture = await createFixture()
+    const missingId = '00000000-0000-4000-8000-999999999999'
+    for (const [requestedUserId, playlistId, snapshotId, code] of [
+      [missingId, 'default', initialSnapshotId, 'USER_NOT_FOUND'],
+      [userId, 'default', missingId, 'SNAPSHOT_NOT_FOUND'],
+      [userId, 'user:missing', initialSnapshotId, 'PLAYLIST_NOT_FOUND'],
+    ]) {
+      const response = await fixture.app.inject({
+        method: 'GET',
+        url: `/api/v1/users/${requestedUserId}/playlists/${encodeURIComponent(playlistId ?? '')}/export?snapshotId=${snapshotId}`,
+        headers: { cookie: fixture.cookie },
+      })
+      expect(response.statusCode).toBe(404)
+      expect(response.json().code).toBe(code)
+      expect(response.headers['content-disposition']).toBeUndefined()
+    }
+    const duplicate = {
+      id: 'duplicate',
+      name: 'Duplicate',
+      locationUpdateTime: null,
+      list: [],
+    }
+    const ambiguous = await createFixture({
+      defaultList: [],
+      loveList: [],
+      userList: [duplicate, { ...duplicate }],
+    })
+    const response = await ambiguous.app.inject({
+      method: 'GET',
+      url: `/api/v1/users/${userId}/playlists/user%3Aduplicate/export?snapshotId=${initialSnapshotId}`,
+      headers: { cookie: ambiguous.cookie },
+    })
+    expect(response.statusCode).toBe(409)
+    expect(response.json().code).toBe('PLAYLIST_ID_AMBIGUOUS')
+    expect(ambiguous.getSaveCount()).toBe(0)
+  })
+
+  it('previews typed duplicates without side effects and reports actual copy counts', async () => {
+    const songs = [
+      { id: 2, meta: { original: 'number' } },
+      { id: '2', meta: { original: 'string' } },
+      { id: 'fresh', customField: ['preserved'] },
+    ]
+    const fixture = await createFixture({
+      defaultList: songs,
+      loveList: [{ id: 2, meta: { original: 'target' } }],
+      userList: [],
+    })
+    const headers = { cookie: fixture.cookie, origin: config.PUBLIC_ORIGIN }
+    const basePath = `/api/v1/users/${userId.toUpperCase()}/playlists/default`
+    const payload = {
+      targetPlaylistId: 'love',
+      songIds: ['fresh', 2, '2'],
+      expectedSnapshotId: initialSnapshotId,
+    }
+    const preview = await fixture.app.inject({
+      method: 'POST',
+      url: `${basePath}/song-copy-previews`,
+      headers,
+      payload,
+    })
+    expect(preview.statusCode).toBe(200)
+    expect(preview.headers['cache-control']).toBe('no-store')
+    expect(preview.json()).toEqual({
+      snapshotId: initialSnapshotId,
+      snapshotCreatedAt: '2026-07-23T04:00:00.000Z',
+      sourcePlaylistId: 'default',
+      targetPlaylistId: 'love',
+      requestedSongCount: 3,
+      addedSongCount: 2,
+      skippedSongCount: 1,
+      existingSongIds: [2],
+    })
+    expect(fixture.getSaveCount()).toBe(0)
+    expect(fixture.audits).toEqual([])
+    expect(fixture.broadcastUserIds).toEqual([])
+    expect(fixture.exclusiveUserIds).toEqual([userId])
+
+    const copied = await fixture.app.inject({
+      method: 'POST',
+      url: `${basePath}/song-copies`,
+      headers,
+      payload,
+    })
+    expect(copied.statusCode).toBe(200)
+    expect(copied.json()).toMatchObject({
+      affectedSongCount: 3,
+      addedSongCount: 2,
+      skippedSongCount: 1,
+    })
+    expect(fixture.getHead().data.defaultList).toEqual(songs)
+    expect(fixture.getHead().data.loveList).toEqual([
+      { id: 2, meta: { original: 'target' } },
+      songs[2],
+      songs[1],
+    ])
+
+    const currentPayload = {
+      ...payload,
+      expectedSnapshotId: fixture.getHead().id,
+    }
+    const repeatedPreview = await fixture.app.inject({
+      method: 'POST',
+      url: `${basePath}/song-copy-previews`,
+      headers,
+      payload: currentPayload,
+    })
+    expect(repeatedPreview.statusCode).toBe(200)
+    expect(repeatedPreview.json()).toMatchObject({
+      requestedSongCount: 3,
+      addedSongCount: 0,
+      skippedSongCount: 3,
+      existingSongIds: ['fresh', 2, '2'],
+    })
+    const repeatedCopy = await fixture.app.inject({
+      method: 'POST',
+      url: `${basePath}/song-copies`,
+      headers,
+      payload: currentPayload,
+    })
+    expect(repeatedCopy.statusCode).toBe(200)
+    expect(repeatedCopy.json()).toMatchObject({
+      affectedSongCount: 3,
+      addedSongCount: 0,
+      skippedSongCount: 3,
+    })
+    expect(fixture.getSaveCount()).toBe(2)
+    expect(fixture.audits.map((audit) => audit.action)).toEqual([
+      'playlist.songs.copy',
+      'playlist.songs.copy',
+    ])
+    expect(fixture.broadcastUserIds).toEqual([userId, userId])
+  })
+
+  it('rejects invalid preview bodies and stale heads without creating mutations', async () => {
+    const fixture = await createFixture()
+    const url = `/api/v1/users/${userId}/playlists/default/song-copy-previews`
+    const headers = { cookie: fixture.cookie, origin: config.PUBLIC_ORIGIN }
+    const payload = {
+      targetPlaylistId: 'love',
+      songIds: [2],
+      expectedSnapshotId: initialSnapshotId,
+    }
+    for (const invalidPayload of [
+      { ...payload, unknown: true },
+      { ...payload, songIds: [2, 2] },
+      { ...payload, songIds: [] },
+      {
+        ...payload,
+        songIds: Array.from({ length: 10_001 }, (_, index) => index),
+      },
+      { ...payload, songIds: [null] },
+      { ...payload, expectedSnapshotId: 'invalid' },
+      { ...payload, targetPlaylistId: '' },
+    ]) {
+      const rejected = await fixture.app.inject({
+        method: 'POST',
+        url,
+        headers,
+        payload: invalidPayload,
+      })
+      expect(rejected.statusCode).toBe(400)
+      expect(rejected.json().code).toBe('VALIDATION_FAILED')
+    }
+    const noOrigin = await fixture.app.inject({
+      method: 'POST',
+      url,
+      headers: { cookie: fixture.cookie },
+      payload,
+    })
+    expect(noOrigin.statusCode).toBe(403)
+    expect(noOrigin.json().code).toBe('ORIGIN_INVALID')
+    const tooLarge = await fixture.app.inject({
+      method: 'POST',
+      url,
+      headers,
+      payload: { ...payload, songIds: ['x'.repeat(1024 * 1024)] },
+    })
+    expect(tooLarge.statusCode).toBe(413)
+    expect(tooLarge.json().code).toBe('PAYLOAD_TOO_LARGE')
+    const stale = await fixture.app.inject({
+      method: 'POST',
+      url,
+      headers,
+      payload: {
+        ...payload,
+        expectedSnapshotId: '00000000-0000-4000-8000-999999999999',
+      },
+    })
+    expect(stale.statusCode).toBe(409)
+    expect(stale.json().code).toBe('SNAPSHOT_CONFLICT')
+    expect(fixture.getSaveCount()).toBe(0)
+    expect(fixture.audits).toEqual([])
+    expect(fixture.broadcastUserIds).toEqual([])
+  })
+
+  it('shares copy capacity checks while allowing duplicate-only previews at the limit', async () => {
+    const fixture = await createFixture({
+      defaultList: [{ id: 2 }],
+      loveList: Array.from({ length: 9999 }, (_, index) => ({
+        id: index === 0 ? 2 : `existing-${index}`,
+      })),
+      userList: [
+        { id: 'target', name: 'Target', locationUpdateTime: null, list: [] },
+      ],
+    })
+    const headers = { cookie: fixture.cookie, origin: config.PUBLIC_ORIGIN }
+    const basePath = `/api/v1/users/${userId}/playlists/default`
+    const payload = {
+      targetPlaylistId: 'user:target',
+      songIds: [2],
+      expectedSnapshotId: initialSnapshotId,
+    }
+    for (const action of ['song-copy-previews', 'song-copies']) {
+      const rejected = await fixture.app.inject({
+        method: 'POST',
+        url: `${basePath}/${action}`,
+        headers,
+        payload,
+      })
+      expect(rejected.statusCode).toBe(409)
+      expect(rejected.json().code).toBe('PLAYLIST_CAPACITY_EXCEEDED')
+    }
+    const allowed = await fixture.app.inject({
+      method: 'POST',
+      url: `${basePath}/song-copy-previews`,
+      headers,
+      payload: { ...payload, targetPlaylistId: 'love' },
+    })
+    expect(allowed.statusCode).toBe(200)
+    expect(allowed.json()).toMatchObject({
+      addedSongCount: 0,
+      skippedSongCount: 1,
+      existingSongIds: [2],
+    })
+    expect(fixture.getSaveCount()).toBe(0)
+    expect(fixture.audits).toEqual([])
+  })
+
   it('canonicalizes uppercase user UUIDs before writes and broadcasts', async () => {
     const fixture = await createFixture()
     const response = await fixture.app.inject({
@@ -500,6 +901,8 @@ describe('playlist management HTTP API', () => {
       `/api/v1/users/${userId}/playlists/user%3Atarget`,
     )
     expect(response.json()).toMatchObject({ affectedSongCount: 1 })
+    expect(response.json()).not.toHaveProperty('addedSongCount')
+    expect(response.json()).not.toHaveProperty('skippedSongCount')
     expect(fixture.getHead().data.userList[0]?.list[0]).toMatchObject({
       id: 123456,
       source: 'wy',
@@ -628,6 +1031,8 @@ describe('playlist management HTTP API', () => {
     })
     expect(removed.statusCode).toBe(200)
     expect(removed.json().affectedSongCount).toBe(1)
+    expect(removed.json()).not.toHaveProperty('addedSongCount')
+    expect(removed.json()).not.toHaveProperty('skippedSongCount')
     expect(fixture.getHead().data.userList[0]?.list).toEqual([])
 
     const moved = await fixture.app.inject({
@@ -642,6 +1047,8 @@ describe('playlist management HTTP API', () => {
     })
     expect(moved.statusCode).toBe(200)
     expect(moved.json().affectedSongCount).toBe(1)
+    expect(moved.json()).not.toHaveProperty('addedSongCount')
+    expect(moved.json()).not.toHaveProperty('skippedSongCount')
     expect(fixture.getHead().data.defaultList).toEqual([
       expect.objectContaining({ id: 2 }),
     ])

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api } from './api.js'
+import { api, playlistExportPath } from './api.js'
 
 const userId = '00000000-0000-4000-8000-000000000001'
 const snapshotId = '00000000-0000-4000-8000-000000000002'
@@ -10,6 +10,163 @@ afterEach(() => {
 })
 
 describe('playlist API client', () => {
+  it('exports the complete playlist from a fixed snapshot with encoded identifiers', () => {
+    expect(playlistExportPath(userId, 'user:旅行/#?', snapshotId)).toBe(
+      `/api/v1/users/${userId}/playlists/user%3A%E6%97%85%E8%A1%8C%2F%23%3F/export?snapshotId=${snapshotId}`,
+    )
+  })
+
+  it('validates a typed copy preview and forwards query cancellation', async () => {
+    const controller = new AbortController()
+    const preview = {
+      snapshotId,
+      snapshotCreatedAt: createdAt,
+      sourcePlaylistId: 'user:road/trip',
+      targetPlaylistId: 'love',
+      requestedSongCount: 2,
+      addedSongCount: 1,
+      skippedSongCount: 1,
+      existingSongIds: [2],
+    }
+    const fetchMock = vi.fn().mockResolvedValue(Response.json(preview))
+    vi.stubGlobal('fetch', fetchMock)
+    const input = {
+      targetPlaylistId: 'love',
+      songIds: [2, '2'],
+      expectedSnapshotId: snapshotId,
+    }
+
+    expect(
+      await api.previewPlaylistSongCopy(
+        userId,
+        'user:road/trip',
+        input,
+        controller.signal,
+      ),
+    ).toEqual(preview)
+    expect(fetchMock).toHaveBeenCalledWith(
+      `/api/v1/users/${userId}/playlists/user%3Aroad%2Ftrip/song-copy-previews`,
+      {
+        method: 'POST',
+        body: JSON.stringify(input),
+        headers: { 'Content-Type': 'application/json' },
+        signal: controller.signal,
+      },
+    )
+  })
+
+  it.each([
+    { snapshotId: userId },
+    { sourcePlaylistId: 'other' },
+    { targetPlaylistId: 'other' },
+    { requestedSongCount: 2, addedSongCount: 1 },
+    { addedSongCount: -1 },
+    { addedSongCount: 1 },
+    { existingSongIds: ['2'] },
+    { existingSongIds: [2, 2], skippedSongCount: 2, requestedSongCount: 2 },
+    { existingSongIds: [] },
+  ])(
+    'rejects a copy preview that does not describe the current selection: %j',
+    async (change) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          Response.json({
+            snapshotId,
+            snapshotCreatedAt: createdAt,
+            sourcePlaylistId: 'default',
+            targetPlaylistId: 'love',
+            requestedSongCount: 1,
+            addedSongCount: 0,
+            skippedSongCount: 1,
+            existingSongIds: [2],
+            ...change,
+          }),
+        ),
+      )
+
+      await expect(
+        api.previewPlaylistSongCopy(userId, 'default', {
+          targetPlaylistId: 'love',
+          songIds: [2],
+          expectedSnapshotId: snapshotId,
+        }),
+      ).rejects.toThrow()
+    },
+  )
+
+  it('keeps copy counts separate from the existing affected count', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json({
+          snapshotId,
+          snapshotCreatedAt: createdAt,
+          affectedSongCount: 2,
+          addedSongCount: 0,
+          skippedSongCount: 2,
+        }),
+      ),
+    )
+    expect(
+      await api.copyPlaylistSongs(userId, 'default', {
+        targetPlaylistId: 'love',
+        songIds: [2, '2'],
+        expectedSnapshotId: snapshotId,
+      }),
+    ).toMatchObject({
+      affectedSongCount: 2,
+      addedSongCount: 0,
+      skippedSongCount: 2,
+    })
+  })
+
+  it('does not invent added or skipped counts for an older copy response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json({
+          snapshotId,
+          snapshotCreatedAt: createdAt,
+          affectedSongCount: 2,
+        }),
+      ),
+    )
+    expect(
+      await api.copyPlaylistSongs(userId, 'default', {
+        targetPlaylistId: 'love',
+        songIds: [2, '2'],
+        expectedSnapshotId: snapshotId,
+      }),
+    ).toMatchObject({
+      affectedSongCount: 2,
+      addedSongCount: null,
+      skippedSongCount: null,
+    })
+  })
+
+  it('rejects inconsistent copy result counts', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        Response.json({
+          snapshotId,
+          snapshotCreatedAt: createdAt,
+          affectedSongCount: 2,
+          addedSongCount: 2,
+          skippedSongCount: 1,
+        }),
+      ),
+    )
+    await expect(
+      api.copyPlaylistSongs(userId, 'default', {
+        targetPlaylistId: 'love',
+        songIds: [2, '2'],
+        expectedSnapshotId: snapshotId,
+      }),
+    ).rejects.toThrow()
+  })
+
   it('validates an immutable playlist detail response', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       Response.json({

@@ -5,6 +5,12 @@ import type { FastifyBaseLogger } from 'fastify'
 import { createMsg2call } from 'message2call'
 import { type RawData, WebSocket, WebSocketServer } from 'ws'
 import type { DeviceRecord, Repository } from '../db/repository.js'
+import {
+  syncOperationDuration,
+  syncOperationTotal,
+  wsConnectionsActive,
+  wsConnectionsTotal,
+} from '../metrics.js'
 import { LX_SYNC } from '../protocol/index.js'
 import { decodeWireMessage, encodeWireMessage } from '../security/crypto.js'
 import type { LxAuthService } from './auth.js'
@@ -142,11 +148,13 @@ export function createLxGateway(input: {
     const pathMode = pendingPathModes.get(request) ?? 'root'
     pendingDevices.delete(request)
     pendingPathModes.delete(request)
+    wsConnectionsTotal.inc({ status: 'attempt' })
     void startConnection(socket, device, pathMode).catch((error: unknown) => {
       input.logger.warn(
         { event: 'sync.connection.failed', ...syncErrorLogContext(error) },
         'LX WebSocket initialization failed',
       )
+      wsConnectionsTotal.inc({ status: 'failed' })
       socket.close(LX_SYNC.closeCode.failed)
     })
   })
@@ -160,6 +168,7 @@ export function createLxGateway(input: {
     const connectionId = randomUUID()
     let disconnected = false
     let connection: SyncConnection | undefined
+    let activeConnectionCounted = false
     let destroyRpc: (() => void) | undefined
     const logContext = {
       connectionId,
@@ -216,6 +225,10 @@ export function createLxGateway(input: {
     })
     socket.once('close', (code) => {
       deactivate()
+      if (activeConnectionCounted) {
+        activeConnectionCounted = false
+        wsConnectionsActive.dec()
+      }
       input.logger.info(
         {
           ...logContext,
@@ -346,6 +359,9 @@ export function createLxGateway(input: {
     connection = activeConnection
     socketConnections.set(socket, activeConnection)
     registry.add(activeConnection)
+    wsConnectionsActive.inc()
+    activeConnectionCounted = true
+    wsConnectionsTotal.inc({ status: 'success' })
     input.logger.info(
       {
         ...syncLogContext(activeConnection),
@@ -415,8 +431,13 @@ export function createLxGateway(input: {
     })
 
     try {
+      const startTime = Date.now()
       await engine.initialize(activeConnection)
+      const duration = (Date.now() - startTime) / 1000
+      syncOperationDuration.observe({ operation: 'initialize' }, duration)
+      syncOperationTotal.inc({ operation: 'initialize', status: 'success' })
     } catch (error) {
+      syncOperationTotal.inc({ operation: 'initialize', status: 'error' })
       if (disconnected) return
       input.logger.warn(
         {

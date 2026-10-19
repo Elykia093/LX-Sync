@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { SnapshotRecord } from '../db/repository.js'
 import type { ListData } from '../protocol/index.js'
-import { playlistDetailResponse, playlistSummaryResponse } from './playlists.js'
+import {
+  playlistDetailResponse,
+  playlistExportResponse,
+  playlistSummaryResponse,
+} from './playlists.js'
 
 const head: SnapshotRecord<ListData> = {
   id: '00000000-0000-4000-8000-000000000020',
@@ -36,6 +40,34 @@ const head: SnapshotRecord<ListData> = {
 }
 
 describe('playlist management projections', () => {
+  it('exports complete LX songs without exposing repository-only snapshot fields', () => {
+    const snapshot = {
+      ...head,
+      authKey: 'internal-auth-key',
+      deviceKey: 'internal-device-key',
+      payload: 'internal-payload',
+    }
+    const response = playlistExportResponse(
+      snapshot,
+      'default',
+      '00000000-0000-4000-8000-000000000001',
+    )
+    expect(response?.songs).toEqual(head.data.defaultList)
+    expect(response?.songs[0]).toHaveProperty(
+      'secretField',
+      'must-not-be-returned',
+    )
+    expect(response?.playlist).toEqual({
+      id: 'default',
+      name: '默认列表',
+      type: 'default',
+      songCount: 2,
+      metadata: null,
+    })
+    expect(JSON.stringify(response)).not.toContain('internal-')
+    expect(playlistExportResponse(snapshot, 'missing', 'user-id')).toBeNull()
+  })
+
   it('summarizes built-in and user playlists from the current list head', () => {
     expect(
       playlistSummaryResponse(head, new Map([['focus', 'hires']])),
@@ -212,6 +244,9 @@ describe('playlist management projections', () => {
         offset: 0,
         limit: 10,
       }),
+    ).toThrowError('Playlist identifier is ambiguous')
+    expect(() =>
+      playlistExportResponse(duplicateHead, 'user:focus', 'user-id'),
     ).toThrowError('Playlist identifier is ambiguous')
   })
 })

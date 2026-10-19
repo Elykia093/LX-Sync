@@ -10,6 +10,7 @@ import type {
   SnapshotRecord,
   SyncUserRecord,
 } from '../db/repository.js'
+import { wsConnectionsActive } from '../metrics.js'
 import { type ListData, LX_SYNC } from '../protocol/index.js'
 import { decodeWireMessage, encodeWireMessage } from '../security/crypto.js'
 import type { LxAuthService } from './auth.js'
@@ -268,6 +269,7 @@ describe('LX gateway connection lifecycle', () => {
     await lookupStarted.promise
     const serverSocket = fixture.serverSockets[0]
     if (!serverSocket) throw new Error('Expected a server WebSocket')
+    const activeBeforeClose = (await wsConnectionsActive.get()).values[0]?.value
     await client.close()
     await fixture.serverClosed.get(serverSocket)
 
@@ -275,6 +277,9 @@ describe('LX gateway connection lifecycle', () => {
     // All resumed startup work uses settled promises; drain through one event-loop turn.
     await new Promise<void>((resolve) => setImmediate(resolve))
     expect(fixture.registry.count()).toBe(0)
+    expect((await wsConnectionsActive.get()).values[0]?.value).toBe(
+      activeBeforeClose,
+    )
     expect(
       fixture.logger.info.mock.calls.some(
         ([context]) => context.event === 'sync.connection.opened',

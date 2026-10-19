@@ -174,6 +174,141 @@ test('管理员可从失败登录恢复并完成用户管理与审计旅程', as
       page.getByRole('row').filter({ hasText: songId }),
     ).toContainText(singer)
 
+    const requestHeaders = { Origin: new URL(page.url()).origin }
+    const playlistCollectionPath = `/api/v1/users/${userId}/playlists`
+    const currentPlaylistsResponse = await page.request.get(
+      playlistCollectionPath,
+    )
+    expect(currentPlaylistsResponse.status()).toBe(200)
+    const currentPlaylists = (await currentPlaylistsResponse.json()) as {
+      snapshotId: string
+    }
+    const secondSongId = `e2e-second-${randomUUID().slice(0, 8)}`
+    const secondSongName = 'E2E 隐藏歌曲'
+    const addHiddenSong = await page.request.post(
+      `${playlistCollectionPath}/${encodeURIComponent(createdPlaylist.playlist.id)}/songs`,
+      {
+        headers: requestHeaders,
+        data: {
+          id: secondSongId,
+          source: 'wy',
+          name: secondSongName,
+          singer,
+          albumName: '另一张专辑',
+          expectedSnapshotId: currentPlaylists.snapshotId,
+        },
+      },
+    )
+    expect(addHiddenSong.status()).toBe(201)
+    const hiddenSongResult = (await addHiddenSong.json()) as {
+      snapshotId: string
+    }
+    await page.getByRole('button', { name: '刷新', exact: true }).click()
+    await expect(
+      page.getByRole('link', { name: '导出完整歌单' }),
+    ).toHaveAttribute(
+      'href',
+      `${playlistCollectionPath}/${encodeURIComponent(createdPlaylist.playlist.id)}/export?snapshotId=${hiddenSongResult.snapshotId}`,
+    )
+    await expect(page.getByText(secondSongName, { exact: true })).toHaveCount(0)
+    await expect(
+      page.getByRole('navigation', { name: '歌曲分页' }),
+    ).toContainText('共 1 首')
+
+    const playlistDownloadPromise = page.waitForEvent('download')
+    await page.getByRole('link', { name: '导出完整歌单' }).click()
+    const playlistDownload = await playlistDownloadPromise
+    expect(playlistDownload.suggestedFilename()).toBe('lx-sync-playlist.json')
+    const playlistDownloadPath = await playlistDownload.path()
+    if (!playlistDownloadPath) throw new Error('Playlist export is missing')
+    const playlistExport = JSON.parse(
+      await readFile(playlistDownloadPath, 'utf8'),
+    ) as {
+      songs: Array<{ id: string; meta: { songId: string } }>
+    }
+    expect(playlistExport).toMatchObject({
+      format: 'lx-sync.playlist',
+      version: 1,
+      userId,
+      playlist: {
+        id: createdPlaylist.playlist.id,
+        name: playlistName,
+        songCount: 2,
+      },
+    })
+    expect(playlistExport.songs).toHaveLength(2)
+    expect(playlistExport.songs.map((song) => song.id)).toEqual([
+      songId,
+      secondSongId,
+    ])
+    expect(playlistExport.songs[0]?.meta.songId).toBe(songId)
+
+    const targetName = `e2e-target-${randomUUID().slice(0, 8)}`
+    await page.getByPlaceholder('新建自建歌单').fill(targetName)
+    const targetResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname === playlistCollectionPath,
+    )
+    await page.getByRole('button', { name: '新建', exact: true }).click()
+    const targetResponse = await targetResponsePromise
+    expect(targetResponse.status()).toBe(201)
+    const target = (await targetResponse.json()) as {
+      snapshotId: string
+      playlist: { id: string }
+    }
+    const seedDuplicate = await page.request.post(
+      `${playlistCollectionPath}/${encodeURIComponent(target.playlist.id)}/songs`,
+      {
+        headers: requestHeaders,
+        data: {
+          id: songId,
+          source: 'wy',
+          name: songName,
+          singer,
+          albumName,
+          expectedSnapshotId: target.snapshotId,
+        },
+      },
+    )
+    expect(seedDuplicate.status()).toBe(201)
+    await page.getByRole('button', { name: '刷新', exact: true }).click()
+    await page.getByRole('button', { name: new RegExp(playlistName) }).click()
+    await page.getByLabel('目标歌单').selectOption(target.playlist.id)
+    await page.getByLabel('选择本页全部歌曲').check()
+    await expect(page.getByLabel('复制预览')).toContainText(
+      '将新增 1 首，跳过 1 首已存在歌曲。',
+    )
+    const copyResponsePromise = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        new URL(response.url()).pathname ===
+          `${playlistCollectionPath}/${encodeURIComponent(createdPlaylist.playlist.id)}/song-copies`,
+    )
+    await page.getByRole('button', { name: '复制', exact: true }).click()
+    const copyResponse = await copyResponsePromise
+    expect(copyResponse.status()).toBe(200)
+    expect(await copyResponse.json()).toMatchObject({
+      affectedSongCount: 2,
+      addedSongCount: 1,
+      skippedSongCount: 1,
+    })
+    await expect(
+      page.getByRole('status').filter({ hasText: '复制完成' }),
+    ).toHaveText('复制完成：新增 1 首，跳过 1 首已存在歌曲。')
+
+    await page.reload()
+    await page.getByRole('button', { name: new RegExp(targetName) }).click()
+    await expect(
+      page.getByRole('navigation', { name: '歌曲分页' }),
+    ).toContainText('共 2 首')
+    await expect(page.getByRole('row').filter({ hasText: songId })).toHaveCount(
+      1,
+    )
+    await expect(
+      page.getByRole('row').filter({ hasText: secondSongId }),
+    ).toHaveCount(1)
+
     const listSnapshotPanel = page
       .getByRole('heading', { name: '歌单快照', exact: true })
       .locator('..')
@@ -229,10 +364,15 @@ test('管理员可从失败登录恢复并完成用户管理与审计旅程', as
       page.getByRole('cell', { name: 'user.update', exact: true }),
     ).toBeVisible()
     await expect(
-      page.getByRole('cell', { name: 'playlist.create', exact: true }),
+      page.getByRole('cell', { name: 'playlist.create', exact: true }).first(),
     ).toBeVisible()
     await expect(
-      page.getByRole('cell', { name: 'playlist.songs.add', exact: true }),
+      page
+        .getByRole('cell', { name: 'playlist.songs.add', exact: true })
+        .first(),
+    ).toBeVisible()
+    await expect(
+      page.getByRole('cell', { name: 'playlist.songs.copy', exact: true }),
     ).toBeVisible()
   })
 

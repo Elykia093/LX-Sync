@@ -280,6 +280,69 @@ describe('managedSongIdFromForm', () => {
 })
 
 describe('invalidatePlaylistManagementQueries', () => {
+  it('isolates preview caches by user, source, target, snapshot and typed selected IDs', async () => {
+    const queryClient = new QueryClient()
+    const originalKey = queryKeys.playlistCopyPreview(
+      'user',
+      'default',
+      'love',
+      'snapshot',
+      [2],
+    )
+    const changedKeys = [
+      queryKeys.playlistCopyPreview(
+        'other-user',
+        'default',
+        'love',
+        'snapshot',
+        [2],
+      ),
+      queryKeys.playlistCopyPreview(
+        'user',
+        'other-source',
+        'love',
+        'snapshot',
+        [2],
+      ),
+      queryKeys.playlistCopyPreview(
+        'user',
+        'default',
+        'other-target',
+        'snapshot',
+        [2],
+      ),
+      queryKeys.playlistCopyPreview(
+        'user',
+        'default',
+        'love',
+        'other-snapshot',
+        [2],
+      ),
+      queryKeys.playlistCopyPreview('user', 'default', 'love', 'snapshot', [
+        '2',
+      ]),
+      queryKeys.playlistCopyPreview('user', 'default', 'love', 'snapshot', [
+        2,
+        '2',
+      ]),
+    ]
+    const response = Promise.withResolvers<{ addedSongCount: number }>()
+    const pending = queryClient.fetchQuery({
+      queryKey: originalKey,
+      queryFn: () => response.promise,
+    })
+    for (const key of changedKeys)
+      queryClient.setQueryData(key, { addedSongCount: 1 })
+
+    response.resolve({ addedSongCount: 0 })
+    await pending
+
+    for (const key of changedKeys)
+      expect(queryClient.getQueryData(key)).toEqual({ addedSongCount: 1 })
+    expect(queryClient.getQueryData(originalKey)).toEqual({ addedSongCount: 0 })
+    queryClient.clear()
+  })
+
   it('invalidates every management consumer after a write', async () => {
     const queryClient = new QueryClient()
     const userId = '00000000-0000-4000-8000-000000000001'
@@ -298,6 +361,13 @@ describe('invalidatePlaylistManagementQueries', () => {
         25,
       ),
       queryKeys.snapshots(userId, 'list'),
+      queryKeys.playlistCopyPreview(
+        userId,
+        'user:road-trip',
+        'love',
+        snapshotId,
+        [2, '2'],
+      ),
       queryKeys.audit,
     ] as const
     for (const key of keys) queryClient.setQueryData(key, { private: true })

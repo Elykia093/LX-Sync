@@ -12,6 +12,11 @@ import {
   type SnapshotRecord,
 } from '../db/repository.js'
 import { AppError } from '../errors.js'
+import {
+  httpRequestDuration,
+  httpRequestTotal,
+  registry as metricsRegistry,
+} from '../metrics.js'
 import { playlistQualities } from '../playlist-quality.js'
 import { type ListData, LX_SYNC } from '../protocol/index.js'
 import {
@@ -29,7 +34,11 @@ import {
   isValidManagedSongId,
   PlaylistManagementService,
 } from './playlist-management.js'
-import { playlistDetailResponse, playlistSummaryResponse } from './playlists.js'
+import {
+  playlistDetailResponse,
+  playlistExportResponse,
+  playlistSummaryResponse,
+} from './playlists.js'
 
 export const sessionCookieName = 'lx_sync_session'
 
@@ -37,6 +46,12 @@ interface SessionContext {
   sessionHash: string
   username: string
   expiresAt: Date
+}
+
+declare module 'fastify' {
+  interface FastifyRequest {
+    startTime?: number
+  }
 }
 
 export interface AppDependencies {
@@ -147,6 +162,9 @@ const playlistNameMutationSchema = z
     name: z.string().trim().min(1).max(64),
     expectedSnapshotId: z.string().uuid(),
   })
+  .strict()
+const playlistExportQuerySchema = z
+  .object({ snapshotId: z.string().uuid() })
   .strict()
 const playlistUpdateMutationSchema = playlistNameMutationSchema
   .extend({ quality: z.enum(playlistQualities).nullable().optional() })
@@ -370,6 +388,27 @@ export async function buildApp(dependencies: AppDependencies) {
     } catch {
       return reply.status(503).send({ status: 'unavailable' })
     }
+  })
+  app.get('/metrics', async (_request, reply) => {
+    reply.type('text/plain; version=0.0.4; charset=utf-8')
+    return metricsRegistry.metrics()
+  })
+
+  app.addHook('onRequest', async (request, _reply) => {
+    request.startTime = Date.now()
+  })
+
+  app.addHook('onResponse', async (request, reply) => {
+    if (!request.startTime) return
+    const duration = (Date.now() - request.startTime) / 1000
+    const route = request.routeOptions?.url ?? 'unknown'
+    const labels = {
+      method: request.method,
+      route,
+      status_code: reply.statusCode.toString(),
+    }
+    httpRequestDuration.observe(labels, duration)
+    httpRequestTotal.inc(labels)
   })
 
   const sendHello = (_request: FastifyRequest, reply: FastifyReply) =>
@@ -667,6 +706,48 @@ export async function buildApp(dependencies: AppDependencies) {
           },
         )
 
+        protectedApi.get(
+          '/users/:userId/playlists/:playlistId/export',
+          async (request, reply) => {
+            const { userId, playlistId } = playlistParamsSchema.parse(
+              request.params,
+            )
+            const { snapshotId } = playlistExportQuerySchema.parse(
+              request.query,
+            )
+            await requireUser(repository, userId)
+            const snapshot = await repository.getSnapshot(
+              userId,
+              'list',
+              snapshotId,
+            )
+            if (!snapshot)
+              throw new AppError(
+                404,
+                'SNAPSHOT_NOT_FOUND',
+                'Snapshot was not found',
+              )
+            const response = playlistExportResponse(
+              snapshot,
+              playlistId,
+              userId,
+            )
+            if (!response)
+              throw new AppError(
+                404,
+                'PLAYLIST_NOT_FOUND',
+                'Playlist was not found',
+              )
+            reply
+              .type('application/json; charset=utf-8')
+              .header(
+                'Content-Disposition',
+                'attachment; filename="lx-sync-playlist.json"',
+              )
+            return response
+          },
+        )
+
         protectedApi.post(
           '/users/:userId/playlists',
           async (request, reply) => {
@@ -792,6 +873,23 @@ export async function buildApp(dependencies: AppDependencies) {
               songIds: body.songIds,
               expectedSnapshotId: body.expectedSnapshotId,
               logger: requestSyncLogger(request),
+            })
+          },
+        )
+
+        protectedApi.post(
+          '/users/:userId/playlists/:playlistId/song-copy-previews',
+          async (request) => {
+            const { userId, playlistId } = playlistParamsSchema.parse(
+              request.params,
+            )
+            const body = playlistSongTransferSchema.parse(request.body)
+            return playlistManagement.previewCopySongs({
+              userId,
+              playlistId,
+              targetPlaylistId: body.targetPlaylistId,
+              songIds: body.songIds,
+              expectedSnapshotId: body.expectedSnapshotId,
             })
           },
         )

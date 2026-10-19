@@ -1,0 +1,85 @@
+groups:
+  - name: lx_sync_alerts
+    interval: 30s
+    rules:
+      # HTTP 性能告警
+      - alert: HighHTTPLatency
+        expr: histogram_quantile(0.95, rate(lx_sync_http_request_duration_seconds_bucket[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "HTTP P95 延迟过高"
+          description: "HTTP 请求 P95 延迟超过 2 秒，当前值: {{ $value }}s"
+
+      - alert: HighHTTPErrorRate
+        expr: |
+          sum(rate(lx_sync_http_request_total{status_code=~"5.."}[5m]))
+          / sum(rate(lx_sync_http_request_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "HTTP 5xx 错误率过高"
+          description: "HTTP 5xx 错误率超过 5%，当前值: {{ $value | humanizePercentage }}"
+
+      # WebSocket 连接告警
+      - alert: HighWebSocketConnections
+        expr: lx_sync_active_connections > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WebSocket 连接数异常"
+          description: "活跃 WebSocket 连接数超过 100，当前值: {{ $value }}"
+
+      - alert: WebSocketConnectionSpike
+        expr: sum(increase(lx_sync_websocket_connections_total{status="attempt"}[1m])) > 20
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "WebSocket 连接激增"
+          description: "一分钟内 WebSocket 握手尝试超过 20 次"
+
+      # 同步操作告警
+      - alert: HighSyncOperationFailureRate
+        expr: |
+          sum(rate(lx_sync_operation_total{status="error"}[5m]))
+          / sum(rate(lx_sync_operation_total[5m])) > 0.05
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "同步操作失败率过高"
+          description: "同步操作失败率超过 5%，当前值: {{ $value | humanizePercentage }}"
+
+      - alert: SlowSyncOperations
+        expr: |
+          rate(lx_sync_operation_duration_seconds_sum[5m])
+          / rate(lx_sync_operation_duration_seconds_count[5m]) > 3
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "同步操作延迟过高"
+          description: "平均同步操作延迟超过 3 秒，当前值: {{ $value }}s"
+
+      - alert: NoSyncActivity
+        expr: (sum(rate(lx_sync_operation_total[10m])) or vector(0)) == 0
+        for: 30m
+        labels:
+          severity: info
+        annotations:
+          summary: "同步活动停滞"
+          description: "过去 30 分钟没有任何同步操作"
+
+      # 服务可用性告警
+      - alert: ServiceDown
+        expr: up{job="lx-sync"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "LX-Sync 服务不可用"
+          description: "无法抓取 /metrics 端点，服务可能已停止"

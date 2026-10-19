@@ -6,14 +6,16 @@
 
 LX-Sync 是面向 LX Music 的自托管同步服务，兼容 LX Music v4 的 HTTP 握手和 WebSocket 同步流程。它保存歌单与“不喜欢”规则，提供多设备合并、有限历史快照、设备撤销、快照恢复、审计记录和同源 React 管理端。
 
-- 当前项目版本：`0.6.0`。
+- 当前项目版本：`0.7.0`。
 - 当前阶段：SemVer `0.x.y` 初始开发阶段，README 标记为 Alpha。
 - 部署模型：单实例模块化单体。
 - 持久化事实源：PostgreSQL。
 - 管理端：同源 React SPA，不是公开或跨域管理 API。
 - 明确不在当前范围：Redis、多实例广播、消息队列、分布式锁、SSO/RBAC、SSR、移动端应用和 Kubernetes Chart。
 
-当前 `0.6.0` 加固 WebSocket 队列和连接生命周期，修复管理端歌单草稿与退出登录竞态，并补齐浏览器测试的数据库保护。沿用 `0.5.0` 的歌单首选音质功能和 `playlist_preferences` 表，没有新增迁移；LX v4 wire format、握手文本和 `featureVersion` 保持不变。
+`0.6.0` 加固 WebSocket 队列和连接生命周期，修复管理端歌单草稿与退出登录竞态，并补齐浏览器测试的数据库保护。沿用 `0.5.0` 的歌单首选音质功能和 `playlist_preferences` 表，没有新增迁移；LX v4 wire format、握手文本和 `featureVersion` 保持不变。
+
+`0.7.0` 增加歌单首页/末页/跳页、完整单歌单 JSON 导出和复制预检查/新增与跳过计数；一次连接初始化中并行启动启用的 `list` 与 `dislike` 域。它移除 `XCQ0607/lxserver` v2 的本地导入兼容入口，但保留官方 `lx-music-sync-server` 导入工具；没有新增数据库迁移或 LX v4 wire format 变更。同步初始化没有可复现的性能基线，不承诺固定加速比例。Prometheus/Grafana 改为可选的本地 Compose overlay。
 
 ## 2. 文档分工与证据优先级
 
@@ -104,6 +106,8 @@ Compose 固定 PostgreSQL 18-alpine OCI digest，等待数据库健康后启动�
 
 管理 API 固定前缀 `/api/v1`，仅供同源 SPA 使用。主要资源包括 session、status、users、devices、playlists、snapshots 和 audit events。歌单管理复用 LX `ListAction` 和不可变快照模型：所有写请求携带 `expectedSnapshotId`，在用户级串行任务内执行 PostgreSQL head 行锁/CAS、快照与审计同事务写入，并向已就绪的在线 list 连接广播；客户端确认后才推进对应设备 baseline。自建歌单首选音质是独立的当前偏好，不写入 LX wire 快照；旧快照读取叠加当前值。详细字段与错误码见 `docs/api.md`。
 
+单歌单导出按用户、`list` 域和显式 `snapshotId` 读取不可变快照，返回 `lx-sync.playlist` v1 JSON attachment，保留完整歌曲和自建歌单元数据，不应用筛选/分页，也不叠加当前首选音质。复制预检查读取匹配 `expectedSnapshotId` 的当前 head，检查完整目标歌单并返回已有歌曲 ID 与预计新增/跳过计数；它不写入快照或审计，不能替代最终写入的 CAS。复制结果新增 `addedSongCount`、`skippedSongCount`；既有 `affectedSongCount` 仍表示校验通过的请求歌曲数。
+
 所有非 GET/HEAD/OPTIONS 管理请求必须携带与 `PUBLIC_ORIGIN` 完全相同的 `Origin`。请求对象使用 strict Zod schema，未知字段被拒绝。API 返回 `Cache-Control: no-store`，错误统一为 `application/problem+json`，客户端按 `status` 和 `code` 分支。
 
 ## 7. LX v4 同步协议
@@ -168,7 +172,7 @@ Compose 固定 PostgreSQL 18-alpine OCI digest，等待数据库健康后启动�
 
 应用代码使用 camelCase；`CamelCasePlugin` 映射 PostgreSQL snake_case。
 
-`apps/server/src/tools/` 提供两个只面向空专用目标的离线导入入口：`lxserver-v2-import` 读取 `XCQ0607/lxserver v2.0.0` 的完整数据目录，`lx-music-sync-server-import` 读取官方 data format v2 目录和单独的 JSON 用户配置。两者先生成脱敏 dry-run 计划，apply 时要求来源专用环境开关、目标数据库名确认，并在单个事务中写入业务数据和审计后复核行数。
+`apps/server/src/tools/` 提供一个只面向空专用目标的离线导入入口：`lx-music-sync-server-import` 读取官方 data format v2 目录和单独的 strict JSON 用户配置。工具先生成脱敏 dry-run 计划；apply 时要求来源专用环境开关和目标数据库名确认，并在单个事务中写入业务数据和审计后复核行数。
 
 ### 8.1 事务不变量
 
@@ -206,6 +210,8 @@ Fastify logger 遮盖 `req.url`、Authorization、Cookie 和 Set-Cookie。同步
 
 反向代理、WAF/CDN 和托管负载均衡器也必须禁止记录完整 URI/query，因为 WebSocket query 含协议凭据，scoped path 含用户路由标识。
 
+`/metrics` 是未鉴权的低基数指标端点；生产必须限制到受信监控网络。反代应拒绝公共 `/metrics` 请求，并用防火墙或网络策略阻断对应用宿主端口的未授权直连。
+
 ## 10. 前端状态管理
 
 `apps/web/src/main.tsx` 创建单一 `QueryClient`：query 默认不在窗口聚焦时刷新；仅 5xx/网络类错误最多重试一次；mutation 不自动重试。
@@ -219,6 +225,8 @@ Fastify logger 遮盖 `req.url`、Authorization、Cookie 和 Set-Cookie。同步
 - 登出成功或受保护 API 返回 401 时，先取消并等待在途查询结算，再移除所有受保护 cache、把 session 明确写成 `null`，防止旧会话响应恢复登录状态。
 
 React `useState` 只用于 sidebar、复制提示和表单等局部 UI 状态。`apps/web/src/api.ts` 对所有成功响应使用 Zod 解析，对错误解析 Problem JSON；缺失的旧 server 可选字段通过 schema default 兼容为 `null`。
+
+歌单分页基于指定快照和当前筛选结果的总数计算边界；筛选、快照或歌单变化会重置对应选择范围。复制预检查的 query key 包含用户、来源/目标歌单、快照和保留类型的选中歌曲 ID；切换目标或选择后不复用迟到的旧结果。旧服务未返回新增/跳过计数时按缺失处理，不把请求数量当作实际新增数量。
 
 BrowserRouter 路由为 dashboard `/`、用户详情 `/users/:userId` 和审计 `/audit`，未知路径回到 dashboard。
 

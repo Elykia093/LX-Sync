@@ -1,0 +1,83 @@
+{
+  "dashboard": {
+    "title": "LX-Sync Performance",
+    "tags": ["lx-sync"],
+    "timezone": "browser",
+    "panels": [
+      {
+        "id": 1,
+        "title": "HTTP Request Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(lx_sync_http_request_total[5m])",
+            "legendFormat": "{{method}} {{route}} {{status_code}}"
+          }
+        ],
+        "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 }
+      },
+      {
+        "id": 2,
+        "title": "HTTP Request Duration (P95)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.95, rate(lx_sync_http_request_duration_seconds_bucket[5m]))",
+            "legendFormat": "P95 latency"
+          }
+        ],
+        "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 }
+      },
+      {
+        "id": 3,
+        "title": "Active WebSocket Connections",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "lx_sync_active_connections",
+            "legendFormat": "Active connections"
+          }
+        ],
+        "gridPos": { "x": 0, "y": 8, "w": 12, "h": 8 }
+      },
+      {
+        "id": 4,
+        "title": "Sync Operation Success Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "sum(rate(lx_sync_operation_total{status=\"success\"}[5m])) / sum(rate(lx_sync_operation_total[5m])) * 100",
+            "legendFormat": "Success rate %"
+          }
+        ],
+        "gridPos": { "x": 12, "y": 8, "w": 12, "h": 8 }
+      },
+      {
+        "id": 5,
+        "title": "Sync Operation Duration (Avg)",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(lx_sync_operation_duration_seconds_sum[5m]) / rate(lx_sync_operation_duration_seconds_count[5m])",
+            "legendFormat": "{{operation}} avg duration"
+          }
+        ],
+        "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 }
+      },
+      {
+        "id": 6,
+        "title": "Sync Operation Rate",
+        "type": "graph",
+        "targets": [
+          {
+            "expr": "rate(lx_sync_operation_total[5m])",
+            "legendFormat": "{{operation}} {{status}}"
+          }
+        ],
+        "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 }
+      }
+    ],
+    "schemaVersion": 16,
+    "version": 1
+  }
+}

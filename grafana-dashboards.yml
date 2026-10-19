@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: LX-Sync
+    orgId: 1
+    folder: LX-Sync
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /var/lib/grafana/dashboards

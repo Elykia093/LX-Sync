@@ -1,7 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lstat, readdir, readFile, realpath, stat } from 'node:fs/promises'
 import path from 'node:path'
-import { pathToFileURL } from 'node:url'
 import { parseArgs } from 'node:util'
 import { type Kysely, sql, type Transaction } from 'kysely'
 import { z } from 'zod'
@@ -149,13 +148,9 @@ export interface LegacyImportSummary {
   readonly orphanUserDirectories: number
 }
 
-export type ImportSourceFormat = 'lxserver-v2' | 'lx-music-sync-server-v2'
+export type ImportSourceFormat = 'lx-music-sync-server-v2'
 
 const importAudit = {
-  'lxserver-v2': {
-    actor: 'migration:lxserver-v2',
-    action: 'migration.lxserver-v2.import',
-  },
   'lx-music-sync-server-v2': {
     actor: 'migration:lx-music-sync-server-v2',
     action: 'migration.lx-music-sync-server-v2.import',
@@ -165,18 +160,15 @@ const importAudit = {
   { readonly actor: string; readonly action: string }
 >
 
-interface LegacyImportPlan<TSourceFormat extends ImportSourceFormat> {
-  readonly sourceFormat: TSourceFormat
+interface LegacyImportPlan {
+  readonly sourceFormat: ImportSourceFormat
   readonly serverId: string
   readonly users: readonly SourceUserPlan[]
   readonly summary: LegacyImportSummary
 }
 
-export type LxserverV2ImportSummary = LegacyImportSummary
-export type LxserverV2ImportPlan = LegacyImportPlan<'lxserver-v2'>
 export type LxMusicSyncServerImportSummary = LegacyImportSummary
-export type LxMusicSyncServerImportPlan =
-  LegacyImportPlan<'lx-music-sync-server-v2'>
+export type LxMusicSyncServerImportPlan = LegacyImportPlan
 
 export interface BuildImportPlanOptions {
   readonly maxSnapshots: number
@@ -184,7 +176,7 @@ export interface BuildImportPlanOptions {
 }
 
 export class ImportValidationError extends Error {
-  constructor(message = 'Invalid lxserver v2 import source') {
+  constructor(message = 'Invalid lx-music-sync-server v2 import source') {
     super(message)
     this.name = 'ImportValidationError'
   }
@@ -202,19 +194,6 @@ export class TargetSchemaNotDedicatedError extends Error {
     super('Target database schema contains unrelated tables')
     this.name = 'TargetSchemaNotDedicatedError'
   }
-}
-
-export async function buildLxserverV2ImportPlan(
-  sourceDirectory: string,
-  options: BuildImportPlanOptions,
-): Promise<LxserverV2ImportPlan> {
-  assertImportOptions(options)
-  const sourceRoot = await requireDirectory(sourceDirectory)
-  const sourceUsers = await readJson(
-    path.join(sourceRoot, 'users.json'),
-    sourceUsersSchema,
-  )
-  return buildImportPlan(sourceRoot, sourceUsers, options, 'lxserver-v2')
 }
 
 export async function buildLxMusicSyncServerImportPlan(
@@ -238,12 +217,12 @@ export async function buildLxMusicSyncServerImportPlan(
   )
 }
 
-async function buildImportPlan<TSourceFormat extends ImportSourceFormat>(
+async function buildImportPlan(
   sourceRoot: string,
   sourceUsers: ReadonlyArray<z.infer<typeof sourceUserSchema>>,
   options: BuildImportPlanOptions,
-  sourceFormat: TSourceFormat,
-): Promise<LegacyImportPlan<TSourceFormat>> {
+  sourceFormat: ImportSourceFormat,
+): Promise<LegacyImportPlan> {
   const serverInfo = await readJson(
     path.join(sourceRoot, 'serverInfo.json'),
     serverInfoSchema,
@@ -259,8 +238,7 @@ async function buildImportPlan<TSourceFormat extends ImportSourceFormat>(
   const orphanUserDirectories = userDirectories.filter(
     (entry) => entry.isDirectory() && !expectedDirectories.has(entry.name),
   ).length
-  if (sourceFormat === 'lx-music-sync-server-v2' && orphanUserDirectories > 0)
-    throw new ImportValidationError()
+  if (orphanUserDirectories > 0) throw new ImportValidationError()
   const globalClientIds = new Set<string>()
   const users: SourceUserPlan[] = []
 
@@ -345,14 +323,6 @@ async function targetSchemaTables(db: DatabaseExecutor): Promise<string[]> {
   return tables.rows.map((row) => row.tableName)
 }
 
-export async function applyLxserverV2ImportPlan(
-  db: Kysely<Database>,
-  plan: LxserverV2ImportPlan,
-  masterKey: string,
-): Promise<LxserverV2ImportSummary> {
-  return applyImportPlan(db, plan, masterKey)
-}
-
 export async function applyLxMusicSyncServerImportPlan(
   db: Kysely<Database>,
   plan: LxMusicSyncServerImportPlan,
@@ -363,7 +333,7 @@ export async function applyLxMusicSyncServerImportPlan(
 
 async function applyImportPlan(
   db: Kysely<Database>,
-  plan: LegacyImportPlan<ImportSourceFormat>,
+  plan: LegacyImportPlan,
   masterKey: string,
 ): Promise<LegacyImportSummary> {
   return db.transaction().execute(async (transaction) => {
@@ -561,7 +531,7 @@ async function assertTargetDatabaseEmpty(
 
 async function verifyImportedCounts(
   transaction: Transaction<Database>,
-  summary: LxserverV2ImportSummary,
+  summary: LegacyImportSummary,
 ): Promise<void> {
   const [
     metadata,
@@ -764,7 +734,7 @@ function serializeSourceSnapshot(
 function importSummary(
   users: readonly SourceUserPlan[],
   orphanUserDirectories: number,
-): LxserverV2ImportSummary {
+): LegacyImportSummary {
   let sourceSnapshots = 0
   let storedSnapshots = 0
   let listHeadItems = 0
@@ -926,11 +896,6 @@ function databaseName(connectionString: string): string {
 }
 
 const importCli = {
-  'lxserver-v2': {
-    executable: 'lxserver-v2-import.js',
-    applyGate: 'ALLOW_LXSERVER_V2_IMPORT',
-    requiresConfig: false,
-  },
   'lx-music-sync-server-v2': {
     executable: 'lx-music-sync-server-import.js',
     applyGate: 'ALLOW_LX_MUSIC_SYNC_SERVER_IMPORT',
@@ -983,24 +948,18 @@ export async function runImportCli(
   }
   if (!values.source)
     throw new ImportValidationError('Missing source directory')
-  if (cli.requiresConfig && !values.config)
+  if (!values.config)
     throw new ImportValidationError('Missing official JSON config file')
-  if (!cli.requiresConfig && values.config)
-    throw new ImportValidationError('Unexpected official JSON config file')
   const maxSnapshots = Number(values['max-snapshots'] ?? '10')
   const addMusicLocationType = parseAddMusicLocationType(
-    values['add-music-location-type'] ??
-      (sourceFormat === 'lx-music-sync-server-v2' ? 'top' : 'bottom'),
+    values['add-music-location-type'] ?? 'top',
   )
   const options = { maxSnapshots, addMusicLocationType }
-  const plan =
-    sourceFormat === 'lxserver-v2'
-      ? await buildLxserverV2ImportPlan(values.source, options)
-      : await buildLxMusicSyncServerImportPlan(
-          values.source,
-          values.config ?? '',
-          options,
-        )
+  const plan = await buildLxMusicSyncServerImportPlan(
+    values.source,
+    values.config,
+    options,
+  )
   if (!values.apply) {
     console.log(JSON.stringify({ mode: 'dry-run', ...plan.summary }))
     return
@@ -1022,13 +981,3 @@ export async function runImportCli(
     await db.destroy()
   }
 }
-
-const mainModule =
-  process.argv[1] !== undefined &&
-  import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
-if (mainModule)
-  runImportCli('lxserver-v2').catch((error: unknown) => {
-    const name = error instanceof Error ? error.name : 'UnknownError'
-    console.error(`LX-Sync import failed: ${name}`)
-    process.exitCode = 1
-  })

@@ -3,6 +3,7 @@ import {
   SnapshotConflictError,
   type SnapshotRecord,
 } from '../db/repository.js'
+import { syncOperationDuration, syncOperationTotal } from '../metrics.js'
 import {
   type DislikeAction,
   type ListAction,
@@ -70,8 +71,13 @@ export class SyncEngine {
       ),
     )
     connection.feature = feature
-    if (feature.list) await this.syncList(connection)
-    if (feature.dislike) await this.syncDislike(connection)
+
+    // Parallel domain synchronization for improved performance
+    const syncTasks: Promise<void>[] = []
+    if (feature.list) syncTasks.push(this.syncList(connection))
+    if (feature.dislike) syncTasks.push(this.syncDislike(connection))
+    await Promise.all(syncTasks)
+
     await connection.remote.finished()
     this.logger?.info(
       {
@@ -307,13 +313,18 @@ export class SyncEngine {
     connection: SyncConnection,
     rawAction: unknown,
   ): Promise<void> {
+    const startTime = Date.now()
     try {
       const action = parseListAction(rawAction)
-      return await this.hub.runExclusive(connection.user.id, async () => {
+      await this.hub.runExclusive(connection.user.id, async () => {
         this.requireActive(connection)
         await this.applyListExclusive(connection, action)
       })
+      const duration = (Date.now() - startTime) / 1000
+      syncOperationDuration.observe({ operation: 'list_action' }, duration)
+      syncOperationTotal.inc({ operation: 'list_action', status: 'success' })
     } catch (error) {
+      syncOperationTotal.inc({ operation: 'list_action', status: 'error' })
       this.logOperationFailure(
         connection,
         'sync.action.failed',
@@ -358,13 +369,18 @@ export class SyncEngine {
     connection: SyncConnection,
     rawAction: unknown,
   ): Promise<void> {
+    const startTime = Date.now()
     try {
       const action = parseDislikeAction(rawAction)
-      return await this.hub.runExclusive(connection.user.id, async () => {
+      await this.hub.runExclusive(connection.user.id, async () => {
         this.requireActive(connection)
         await this.applyDislikeExclusive(connection, action)
       })
+      const duration = (Date.now() - startTime) / 1000
+      syncOperationDuration.observe({ operation: 'dislike_action' }, duration)
+      syncOperationTotal.inc({ operation: 'dislike_action', status: 'success' })
     } catch (error) {
+      syncOperationTotal.inc({ operation: 'dislike_action', status: 'error' })
       this.logOperationFailure(
         connection,
         'sync.action.failed',

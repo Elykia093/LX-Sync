@@ -1,6 +1,6 @@
 import path from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { runImportCli } from './lxserver-v2-import.js'
+import { runImportCli } from './legacy-import.js'
 
 const mainModule =
   process.argv[1] !== undefined &&

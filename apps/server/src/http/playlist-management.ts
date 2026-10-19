@@ -47,6 +47,8 @@ interface MutationPlan {
   action: ListAction
   affectedPlaylistCount?: number
   affectedSongCount?: number
+  addedSongCount?: number
+  skippedSongCount?: number
   resultPlaylistId?: string
   playlistQualityUpdate?: PlaylistQualityUpdate
 }
@@ -70,6 +72,20 @@ export interface PlaylistUpsertResult extends PlaylistMutationResult {
 
 export interface PlaylistSongMutationResult extends PlaylistMutationResult {
   affectedSongCount: number
+}
+
+export interface PlaylistSongCopyResult extends PlaylistSongMutationResult {
+  addedSongCount: number
+  skippedSongCount: number
+}
+
+export interface PlaylistSongCopyPreviewResult extends PlaylistMutationResult {
+  sourcePlaylistId: string
+  targetPlaylistId: string
+  requestedSongCount: number
+  addedSongCount: number
+  skippedSongCount: number
+  existingSongIds: Array<string | number>
 }
 
 export type ManagedSongSource = 'kw' | 'kg' | 'tx' | 'wy' | 'mg'
@@ -330,6 +346,33 @@ export class PlaylistManagementService {
     return songMutationResponse(result.snapshot, result.affectedSongCount)
   }
 
+  async previewCopySongs(input: {
+    userId: string
+    playlistId: string
+    targetPlaylistId: string
+    songIds: Array<string | number>
+    expectedSnapshotId: string
+  }): Promise<PlaylistSongCopyPreviewResult> {
+    return this.hub.runExclusive(input.userId, async () => {
+      const { head } = await this.readContext(input)
+      const copy = prepareSongCopy(
+        head.data,
+        input.playlistId,
+        input.targetPlaylistId,
+        input.songIds,
+      )
+      return {
+        ...mutationResponse(head),
+        sourcePlaylistId: copy.source.apiId,
+        targetPlaylistId: copy.target.apiId,
+        requestedSongCount: copy.songs.length,
+        addedSongCount: copy.addedSongCount,
+        skippedSongCount: copy.skippedSongCount,
+        existingSongIds: copy.existingSongIds,
+      }
+    })
+  }
+
   async copySongs(input: {
     userId: string
     actor: string
@@ -338,32 +381,49 @@ export class PlaylistManagementService {
     songIds: Array<string | number>
     expectedSnapshotId: string
     logger?: SyncLogger
-  }): Promise<PlaylistSongMutationResult> {
+  }): Promise<PlaylistSongCopyResult> {
     const result = await this.mutate({
       ...input,
       auditAction: 'playlist.songs.copy',
       build: ({ head, user }) => {
-        const source = resolvePlaylist(head.data, input.playlistId)
-        const target = resolvePlaylist(head.data, input.targetPlaylistId)
-        assertWireAddressablePlaylist(source)
-        assertWireAddressablePlaylist(target)
-        requireDifferentPlaylists(source, target)
-        const songs = requireSongs(source, input.songIds)
-        assertCanCopySongs(head.data, target, songs)
+        const copy = prepareSongCopy(
+          head.data,
+          input.playlistId,
+          input.targetPlaylistId,
+          input.songIds,
+        )
         return {
           action: {
             action: 'list_music_add',
             data: {
-              id: target.wireId,
-              musicInfos: songs,
+              id: copy.target.wireId,
+              musicInfos: copy.songs,
               addMusicLocationType: user.addMusicLocationType,
             },
           },
-          affectedSongCount: songs.length,
+          affectedSongCount: copy.songs.length,
+          addedSongCount: copy.addedSongCount,
+          skippedSongCount: copy.skippedSongCount,
         }
       },
     })
-    return songMutationResponse(result.snapshot, result.affectedSongCount)
+    return {
+      ...songMutationResponse(result.snapshot, result.affectedSongCount),
+      addedSongCount: result.addedSongCount,
+      skippedSongCount: result.skippedSongCount,
+    }
+  }
+
+  private async readContext(input: {
+    userId: string
+    expectedSnapshotId: string
+  }): Promise<MutationContext> {
+    const user = await this.repository.getUserSummary(input.userId)
+    if (!user) throw new AppError(404, 'USER_NOT_FOUND', 'User was not found')
+    const head = await this.repository.getHead('list', input.userId)
+    if (head.id !== input.expectedSnapshotId) throw new SnapshotConflictError()
+    assertUnambiguousUserPlaylistIds(head.data)
+    return { head, user }
   }
 
   private async mutate(input: {
@@ -376,15 +436,12 @@ export class PlaylistManagementService {
   }): Promise<{
     snapshot: SnapshotRecord<ListData>
     affectedSongCount: number
+    addedSongCount: number
+    skippedSongCount: number
     resultPlaylistId?: string
   }> {
     return this.hub.runExclusive(input.userId, async () => {
-      const user = await this.repository.getUserSummary(input.userId)
-      if (!user) throw new AppError(404, 'USER_NOT_FOUND', 'User was not found')
-      const head = await this.repository.getHead('list', input.userId)
-      if (head.id !== input.expectedSnapshotId)
-        throw new SnapshotConflictError()
-      assertUnambiguousUserPlaylistIds(head.data)
+      const { head, user } = await this.readContext(input)
       const plan = input.build({ head, user })
       const affectedPlaylistCount = plan.affectedPlaylistCount ?? 1
       const affectedSongCount = plan.affectedSongCount ?? 0
@@ -420,6 +477,8 @@ export class PlaylistManagementService {
       return {
         snapshot,
         affectedSongCount,
+        addedSongCount: plan.addedSongCount ?? 0,
+        skippedSongCount: plan.skippedSongCount ?? 0,
         ...(plan.resultPlaylistId
           ? { resultPlaylistId: plan.resultPlaylistId }
           : {}),
@@ -613,18 +672,41 @@ function assertCanAddSong(data: ListData): void {
     )
 }
 
-function assertCanCopySongs(
+function prepareSongCopy(
   data: ListData,
-  target: ResolvedPlaylist,
-  songs: MusicInfo[],
-): void {
+  playlistId: string,
+  targetPlaylistId: string,
+  songIds: Array<string | number>,
+) {
+  const source = resolvePlaylist(data, playlistId)
+  const target = resolvePlaylist(data, targetPlaylistId)
+  assertWireAddressablePlaylist(source)
+  assertWireAddressablePlaylist(target)
+  requireDifferentPlaylists(source, target)
+  const songs = requireSongs(source, songIds)
   const targetIds = new Set(target.songs.map((song) => song.id))
-  let additionalSongCount = 0
+  const existingSongIds: Array<string | number> = []
+  let addedSongCount = 0
   for (const song of songs) {
-    if (targetIds.has(song.id)) continue
-    targetIds.add(song.id)
-    additionalSongCount += 1
+    if (targetIds.has(song.id)) {
+      existingSongIds.push(song.id)
+    } else {
+      targetIds.add(song.id)
+      addedSongCount += 1
+    }
   }
+  assertCanCopySongs(data, addedSongCount)
+  return {
+    source,
+    target,
+    songs,
+    addedSongCount,
+    skippedSongCount: existingSongIds.length,
+    existingSongIds,
+  }
+}
+
+function assertCanCopySongs(data: ListData, additionalSongCount: number): void {
   const currentSongCount =
     data.defaultList.length +
     data.loveList.length +

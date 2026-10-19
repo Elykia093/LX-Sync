@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: 'lx-sync-local'
+
+scrape_configs:
+  - job_name: 'lx-sync'
+    static_configs:
+      - targets: ['app:9527']
+    metrics_path: '/metrics'
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+rule_files:
+  - 'alerts.yml'
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+      # 配置 Alertmanager 地址，例如:
+      # - targets: ['alertmanager:9093']

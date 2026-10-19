@@ -8,8 +8,6 @@ import {
   Activity,
   BookOpen,
   Check,
-  ChevronLeft,
-  ChevronRight,
   Clock3,
   Copy,
   Download,
@@ -62,6 +60,7 @@ import {
   type SyncUser,
   sessionExpiredEventName,
 } from './api.js'
+import { PlaylistPagination } from './PlaylistPagination.js'
 
 export const queryKeys = {
   session: ['session'] as const,
@@ -91,6 +90,21 @@ export const queryKeys = {
       albumName,
       offset,
       limit,
+    ] as const,
+  playlistCopyPreview: (
+    userId: string,
+    sourcePlaylistId: string,
+    targetPlaylistId: string,
+    snapshotId: string,
+    songIds: readonly PlaylistSong['id'][],
+  ) =>
+    [
+      'playlist-copy-preview',
+      userId,
+      sourcePlaylistId,
+      targetPlaylistId,
+      snapshotId,
+      [...songIds],
     ] as const,
   snapshots: (userId: string, domain: string) =>
     ['snapshots', userId, domain] as const,
@@ -134,6 +148,10 @@ export async function invalidatePlaylistManagementQueries(
   await Promise.all([
     queryClient.invalidateQueries({ queryKey: queryKeys.playlists(userId) }),
     queryClient.invalidateQueries({ queryKey: ['playlist-songs', userId] }),
+    queryClient.invalidateQueries({
+      queryKey: ['playlist-copy-preview', userId],
+      refetchType: 'none',
+    }),
     queryClient.invalidateQueries({
       queryKey: queryKeys.snapshots(userId, 'list'),
     }),
@@ -1207,22 +1225,35 @@ function PlaylistManager({ userId }: { userId: string }) {
       })
     },
     enabled: activePlaylistId !== null && snapshotId !== '',
+    placeholderData: (previousData, previousQuery) => {
+      const key = previousQuery?.queryKey
+      return key?.[1] === userId &&
+        key[2] === activePlaylistId &&
+        key[3] === snapshotId &&
+        key[4] === songQuery &&
+        key[5] === songSourceQuery &&
+        key[6] === songSingerQuery &&
+        key[7] === songAlbumQuery
+        ? previousData
+        : undefined
+    },
   })
   useEffect(() => {
-    if (songs.data === undefined) return
+    if (songs.data === undefined || songs.isPlaceholderData) return
     const nextOffset = playlistOffsetForTotal(
       offset,
       songs.data.total,
       playlistPageSize,
     )
     if (nextOffset !== offset) setOffset(nextOffset)
-  }, [offset, songs.data])
+  }, [offset, songs.data, songs.isPlaceholderData])
   useEffect(() => {
     setPlaylistDraftId(activePlaylist?.id ?? null)
     setRenameName(activePlaylist?.name ?? '')
     setPlaylistQuality(activePlaylist?.quality ?? '')
   }, [activePlaylist?.id, activePlaylist?.name, activePlaylist?.quality])
-  const selectionScope = `${activePlaylistId ?? ''}\u0000${snapshotId}\u0000${songQuery}\u0000${songSourceQuery}\u0000${songSingerQuery}\u0000${songAlbumQuery}\u0000${offset}`
+  const playlistViewScope = `${userId}\u0000${activePlaylistId ?? ''}\u0000${snapshotId}\u0000${songQuery}\u0000${songSourceQuery}\u0000${songSingerQuery}\u0000${songAlbumQuery}`
+  const selectionScope = `${playlistViewScope}\u0000${offset}`
   const selectedSongIds =
     songSelection.scope === selectionScope ? songSelection.ids : []
   const updateSelectedSongIds = (
@@ -1401,6 +1432,7 @@ function PlaylistManager({ userId }: { userId: string }) {
   }
 
   const selectPlaylist = (playlistId: string) => {
+    if (activeMutationPending) return
     resetMutationErrors()
     setSelectedPlaylistId(playlistId)
     setSongSearchInput('')
@@ -1417,6 +1449,8 @@ function PlaylistManager({ userId }: { userId: string }) {
 
   const searchSongs = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (activeMutationPending) return
+    resetMutationErrors()
     setSongQuery(songSearchInput.trim())
     setSongSourceQuery(songSourceInput)
     setSongSingerQuery(songSingerInput.trim())
@@ -1425,6 +1459,8 @@ function PlaylistManager({ userId }: { userId: string }) {
   }
 
   const clearSongSearch = () => {
+    if (activeMutationPending) return
+    resetMutationErrors()
     setSongSearchInput('')
     setSongQuery('')
     setSongSourceInput('')
@@ -1440,9 +1476,13 @@ function PlaylistManager({ userId }: { userId: string }) {
     resetMutationErrors()
     clearSelectedSongIds()
     await playlists.refetch()
-    await queryClient.invalidateQueries({
-      queryKey: ['playlist-songs', userId],
-    })
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['playlist-songs', userId] }),
+      queryClient.invalidateQueries({
+        queryKey: ['playlist-copy-preview', userId],
+        refetchType: 'none',
+      }),
+    ])
   }
 
   const submitCreatePlaylist = (event: FormEvent<HTMLFormElement>) => {
@@ -1523,6 +1563,7 @@ function PlaylistManager({ userId }: { userId: string }) {
   }
 
   const togglePageSongs = (checked: boolean) => {
+    copySongs.reset()
     const pageSongIds = pageSongs.map((song) => song.id)
     updateSelectedSongIds((current) =>
       checked
@@ -1535,6 +1576,7 @@ function PlaylistManager({ userId }: { userId: string }) {
   }
 
   const toggleSong = (songId: PlaylistSong['id'], checked: boolean) => {
+    copySongs.reset()
     updateSelectedSongIds((current) =>
       checked
         ? current.includes(songId)
@@ -1563,7 +1605,12 @@ function PlaylistManager({ userId }: { userId: string }) {
       !activePlaylistId ||
       !targetPlaylistId ||
       !snapshotId ||
-      selectedSongIds.length === 0
+      selectedSongIds.length === 0 ||
+      activeMutationPending ||
+      songs.isFetching ||
+      playlists.isFetching ||
+      (mode === 'copy' &&
+        (!currentCopyPreview || currentCopyPreview.addedSongCount === 0))
     )
       return
     const input = {
@@ -1586,6 +1633,46 @@ function PlaylistManager({ userId }: { userId: string }) {
     moveSongs.isPending ||
     copySongs.isPending
   const detailPlaylist = songs.data?.playlist ?? activePlaylist
+  const copyPreview = useQuery({
+    queryKey: queryKeys.playlistCopyPreview(
+      userId,
+      activePlaylistId ?? '',
+      targetPlaylistId,
+      snapshotId,
+      selectedSongIds,
+    ),
+    queryFn: ({ signal }) => {
+      if (!activePlaylistId) throw new Error('Playlist is not selected')
+      return api.previewPlaylistSongCopy(
+        userId,
+        activePlaylistId,
+        {
+          targetPlaylistId,
+          songIds: selectedSongIds,
+          expectedSnapshotId: snapshotId,
+        },
+        signal,
+      )
+    },
+    enabled:
+      activePlaylistId !== null &&
+      snapshotId !== '' &&
+      targetPlaylistId !== '' &&
+      selectedSongIds.length > 0 &&
+      !songs.isFetching &&
+      !playlists.isFetching,
+    retry: false,
+  })
+  const currentCopyPreview =
+    copyPreview.isSuccess && !copyPreview.isFetching ? copyPreview.data : null
+  const managementBusy =
+    activeMutationPending || songs.isFetching || playlists.isFetching
+  const copyResult =
+    copySongs.isSuccess &&
+    copySongs.variables.playlistId === activePlaylistId &&
+    copySongs.variables.targetPlaylistId === targetPlaylistId
+      ? copySongs.data
+      : null
 
   return (
     <section className="panel section-gap playlist-manager" id="user-playlists">
@@ -1655,6 +1742,7 @@ function PlaylistManager({ userId }: { userId: string }) {
                   className={`playlist-item${activePlaylistId === playlist.id ? ' active' : ''}`}
                   type="button"
                   aria-pressed={activePlaylistId === playlist.id}
+                  disabled={activeMutationPending}
                   onClick={() => selectPlaylist(playlist.id)}
                 >
                   <span>
@@ -1695,7 +1783,27 @@ function PlaylistManager({ userId }: { userId: string }) {
                 </small>
               </span>
             </div>
+            {activePlaylistId && snapshotId && (
+              <a
+                className="text-button playlist-export"
+                href={api.playlistExportPath(
+                  userId,
+                  activePlaylistId,
+                  snapshotId,
+                )}
+                download
+                title="导出当前快照的完整歌单 JSON，不受筛选和分页影响"
+              >
+                <Download aria-hidden="true" size={16} />
+                导出完整歌单
+              </a>
+            )}
           </div>
+          {activePlaylistId && snapshotId && (
+            <p className="playlist-export-note">
+              导出包含完整歌单，不受筛选和分页影响。
+            </p>
+          )}
           {activePlaylistId && (
             <form className="playlist-song-search" onSubmit={searchSongs}>
               <label className="search-field">
@@ -2008,7 +2116,7 @@ function PlaylistManager({ userId }: { userId: string }) {
             />
           ) : !activePlaylistId ? (
             <Empty>暂无可查看歌单。</Empty>
-          ) : songs.isPending ? (
+          ) : songs.isPending || songs.isPlaceholderData ? (
             <p className="muted">正在加载歌曲…</p>
           ) : songs.data?.data.length ? (
             <>
@@ -2018,10 +2126,11 @@ function PlaylistManager({ userId }: { userId: string }) {
                   <span>目标歌单</span>
                   <select
                     value={targetPlaylistId}
-                    onChange={(event) =>
+                    onChange={(event) => {
+                      copySongs.reset()
                       setSelectedTargetPlaylistId(event.target.value)
-                    }
-                    disabled={targetPlaylists.length === 0}
+                    }}
+                    disabled={targetPlaylists.length === 0 || managementBusy}
                   >
                     {targetPlaylists.map((playlist) => (
                       <option key={playlist.id} value={playlist.id}>
@@ -2038,7 +2147,9 @@ function PlaylistManager({ userId }: { userId: string }) {
                     disabled={
                       selectedSongIds.length === 0 ||
                       !targetPlaylistId ||
-                      activeMutationPending
+                      managementBusy ||
+                      !currentCopyPreview ||
+                      currentCopyPreview.addedSongCount === 0
                     }
                   >
                     <Copy aria-hidden="true" size={16} />
@@ -2051,7 +2162,7 @@ function PlaylistManager({ userId }: { userId: string }) {
                     disabled={
                       selectedSongIds.length === 0 ||
                       !targetPlaylistId ||
-                      activeMutationPending
+                      managementBusy
                     }
                   >
                     <MoveRight aria-hidden="true" size={16} />
@@ -2061,15 +2172,54 @@ function PlaylistManager({ userId }: { userId: string }) {
                     className="danger"
                     type="button"
                     onClick={removeSelectedSongs}
-                    disabled={
-                      selectedSongIds.length === 0 || activeMutationPending
-                    }
+                    disabled={selectedSongIds.length === 0 || managementBusy}
                   >
                     <Trash2 aria-hidden="true" size={16} />
                     移除
                   </button>
                 </div>
               </div>
+              {selectedSongIds.length > 0 && targetPlaylistId && (
+                <section
+                  className="playlist-copy-preview"
+                  aria-label="复制预览"
+                >
+                  {copyPreview.isFetching || copyPreview.isPending ? (
+                    <p className="muted" role="status">
+                      正在检查目标歌单…
+                    </p>
+                  ) : copyPreview.isError ? (
+                    <>
+                      <PlaylistMutationError
+                        error={copyPreview.error}
+                        onRefresh={() => void refresh()}
+                      />
+                      <button
+                        className="text-button"
+                        type="button"
+                        disabled={managementBusy}
+                        onClick={() => void copyPreview.refetch()}
+                      >
+                        重试预览
+                      </button>
+                    </>
+                  ) : currentCopyPreview ? (
+                    <p className="notice" role="status">
+                      {currentCopyPreview.addedSongCount === 0
+                        ? `所选的 ${currentCopyPreview.requestedSongCount} 首歌曲已全部在目标歌单中，无需复制。`
+                        : `将新增 ${currentCopyPreview.addedSongCount} 首，跳过 ${currentCopyPreview.skippedSongCount} 首已存在歌曲。`}
+                    </p>
+                  ) : null}
+                </section>
+              )}
+              {copyResult && (
+                <p className="notice success" role="status">
+                  {copyResult.addedSongCount !== null &&
+                  copyResult.skippedSongCount !== null
+                    ? `复制完成：新增 ${copyResult.addedSongCount} 首，跳过 ${copyResult.skippedSongCount} 首已存在歌曲。`
+                    : '复制已完成。'}
+                </p>
+              )}
               <PlaylistMutationError
                 error={removeSongs.error ?? moveSongs.error ?? copySongs.error}
                 onRefresh={() => void refresh()}
@@ -2088,6 +2238,7 @@ function PlaylistManager({ userId }: { userId: string }) {
                             className="selection-checkbox"
                             type="checkbox"
                             checked={allPageSongsSelected}
+                            disabled={managementBusy}
                             onChange={(event) =>
                               togglePageSongs(event.target.checked)
                             }
@@ -2114,6 +2265,7 @@ function PlaylistManager({ userId }: { userId: string }) {
                               className="selection-checkbox"
                               type="checkbox"
                               checked={selectedSongIds.includes(song.id)}
+                              disabled={managementBusy}
                               onChange={(event) =>
                                 toggleSong(song.id, event.target.checked)
                               }
@@ -2126,6 +2278,13 @@ function PlaylistManager({ userId }: { userId: string }) {
                           <small className="block mono playlist-song-id">
                             {song.id}
                           </small>
+                          {currentCopyPreview?.existingSongIds.includes(
+                            song.id,
+                          ) && (
+                            <small className="playlist-song-included">
+                              目标已包含
+                            </small>
+                          )}
                         </td>
                         <td data-label="歌手">{song.singer ?? '—'}</td>
                         <td data-label="专辑">{song.albumName ?? '—'}</td>
@@ -2136,46 +2295,24 @@ function PlaylistManager({ userId }: { userId: string }) {
                   </tbody>
                 </table>
               </div>
-              <div className="playlist-pagination">
-                <span aria-live="polite">
-                  第 {songs.data.offset + 1}–
-                  {Math.min(
-                    songs.data.offset + songs.data.data.length,
-                    songs.data.total,
-                  )}{' '}
-                  首，共 {songs.data.total} 首
-                </span>
-                <div>
-                  <button
-                    className="text-button"
-                    type="button"
-                    disabled={offset === 0 || songs.isFetching}
-                    onClick={() =>
-                      setOffset(Math.max(0, offset - playlistPageSize))
-                    }
-                  >
-                    <ChevronLeft aria-hidden="true" size={16} />
-                    上一页
-                  </button>
-                  <button
-                    className="text-button"
-                    type="button"
-                    disabled={
-                      offset + playlistPageSize >= songs.data.total ||
-                      songs.isFetching
-                    }
-                    onClick={() => setOffset(offset + playlistPageSize)}
-                  >
-                    下一页
-                    <ChevronRight aria-hidden="true" size={16} />
-                  </button>
-                </div>
-              </div>
             </>
           ) : (
             <Empty>
               {hasActiveSongFilters ? '没有匹配的歌曲。' : '该歌单暂无歌曲。'}
             </Empty>
+          )}
+          {activePlaylistId && songs.data && !songs.error && (
+            <PlaylistPagination
+              key={playlistViewScope}
+              offset={offset}
+              total={songs.data.total}
+              pageSize={playlistPageSize}
+              busy={managementBusy}
+              onOffsetChange={(nextOffset) => {
+                resetMutationErrors()
+                setOffset(nextOffset)
+              }}
+            />
           )}
         </div>
       </div>

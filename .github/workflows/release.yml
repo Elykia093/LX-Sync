@@ -109,6 +109,21 @@ jobs:
           TEST_DATABASE_URL: postgresql://lx_sync:integration-test-password@127.0.0.1:5432/lx_sync_test
         run: pnpm --filter @lx-sync/server test:integration
 
+      - name: Validate Compose and Prometheus configuration
+        env:
+          ADMIN_PASSWORD: validation-only-admin-password
+          GRAFANA_ADMIN_PASSWORD: validation-only-grafana-password
+          GRAFANA_ADMIN_USER: validation-only
+          MASTER_KEY: validation-only-master-key
+          POSTGRES_PASSWORD: validation-only-postgres-password
+        run: |
+          docker compose -f compose.yaml -f compose.monitoring.yml config --quiet
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --entrypoint /bin/promtool \
+            prom/prometheus:v3.15.0 \
+            check config /workspace/prometheus.yml
+
   validate-image:
     name: Validate Docker image
     if: >-

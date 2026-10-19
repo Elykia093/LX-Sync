@@ -205,6 +205,133 @@ const baseData = (): ListData => ({
 })
 
 describe('PlaylistManagementService', () => {
+  it.each([
+    {
+      name: 'unknown user',
+      override: { userId: 'missing-user' },
+      statusCode: 404,
+      code: 'USER_NOT_FOUND',
+    },
+    {
+      name: 'unknown source',
+      override: { playlistId: 'user:missing' },
+      statusCode: 404,
+      code: 'PLAYLIST_NOT_FOUND',
+    },
+    {
+      name: 'unknown target',
+      override: { targetPlaylistId: 'user:missing' },
+      statusCode: 404,
+      code: 'PLAYLIST_NOT_FOUND',
+    },
+    {
+      name: 'same source and target',
+      override: { targetPlaylistId: 'default' },
+      statusCode: 409,
+      code: 'PLAYLIST_TARGET_INVALID',
+    },
+    {
+      name: 'missing typed song ID',
+      override: { songIds: ['2'] },
+      statusCode: 404,
+      code: 'SONG_NOT_FOUND',
+    },
+  ])(
+    'rejects $name consistently for previews and copies',
+    async ({ override, statusCode, code }) => {
+      const actions: ListAction[] = []
+      const repository = new MemoryRepository(baseData())
+      const service = new PlaylistManagementService(
+        repository,
+        hub([connection({ actions })]),
+      )
+      const input = {
+        userId: 'user-id',
+        actor: 'admin',
+        playlistId: 'default',
+        targetPlaylistId: 'user:target',
+        songIds: [2],
+        expectedSnapshotId: repository.head.id,
+        ...override,
+      }
+      await expect(service.previewCopySongs(input)).rejects.toMatchObject({
+        statusCode,
+        code,
+      })
+      await expect(service.copySongs(input)).rejects.toMatchObject({
+        statusCode,
+        code,
+      })
+      expect(repository.saveCalls).toBe(0)
+      expect(repository.audits).toEqual([])
+      expect(repository.marks).toEqual([])
+      expect(actions).toEqual([])
+    },
+  )
+
+  it.each(['preview', 'copy'] as const)(
+    'checks the current head after a %s waits for the user queue',
+    async (operation) => {
+      const repository = new MemoryRepository(baseData())
+      let releaseQueue: () => void = () => {}
+      const gate = new Promise<void>((resolve) => {
+        releaseQueue = resolve
+      })
+      const service = new PlaylistManagementService(repository, {
+        forUser: () => [],
+        runExclusive: async (_userId, task) => {
+          await gate
+          return task()
+        },
+      })
+      const input = {
+        userId: 'user-id',
+        actor: 'admin',
+        playlistId: 'default',
+        targetPlaylistId: 'user:target',
+        songIds: [2],
+        expectedSnapshotId: repository.head.id,
+      }
+      const pending =
+        operation === 'preview'
+          ? service.previewCopySongs(input)
+          : service.copySongs(input)
+      repository.head = snapshot(
+        '00000000-0000-4000-8000-000000000002',
+        baseData(),
+      )
+      releaseQueue()
+      await expect(pending).rejects.toBeInstanceOf(SnapshotConflictError)
+      expect(repository.saveCalls).toBe(0)
+      expect(repository.audits).toEqual([])
+    },
+  )
+
+  it('rejects ambiguous song IDs in copy previews and writes', async () => {
+    const data = baseData()
+    data.defaultList.push({ id: 2, name: 'Duplicate numeric ID' })
+    const repository = new MemoryRepository(data)
+    const service = new PlaylistManagementService(repository, hub([]))
+    const input = {
+      userId: 'user-id',
+      actor: 'admin',
+      playlistId: 'default',
+      targetPlaylistId: 'user:target',
+      songIds: [2],
+      expectedSnapshotId: repository.head.id,
+    }
+    await expect(service.previewCopySongs(input)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'SONG_ID_AMBIGUOUS',
+    })
+    await expect(service.copySongs(input)).rejects.toMatchObject({
+      statusCode: 409,
+      code: 'SONG_ID_AMBIGUOUS',
+    })
+    expect(repository.saveCalls).toBe(0)
+    expect(repository.audits).toEqual([])
+  })
+
   it('accepts platform ID types and rejects every reserved pseudo prefix', () => {
     expect(isValidManagedSongId('0032')).toBe(true)
     expect(isValidManagedSongId('MUSIC_123-abc')).toBe(true)
@@ -632,6 +759,15 @@ describe('PlaylistManagementService', () => {
       statusCode: 409,
       code: 'PLAYLIST_ID_AMBIGUOUS',
     })
+    await expect(
+      service.previewCopySongs({
+        userId: 'user-id',
+        playlistId: 'default',
+        targetPlaylistId: 'user:target',
+        songIds: [2],
+        expectedSnapshotId: repository.head.id,
+      }),
+    ).rejects.toMatchObject({ statusCode: 409, code: 'PLAYLIST_ID_AMBIGUOUS' })
     expect(repository.saveCalls).toBe(0)
   })
 
@@ -692,6 +828,25 @@ describe('PlaylistManagementService', () => {
       statusCode: 409,
       code: 'PLAYLIST_ID_AMBIGUOUS',
     })
+    for (const input of [
+      {
+        playlistId: 'user:default',
+        targetPlaylistId: 'user:target',
+        songIds: ['reserved-song'],
+      },
+      { playlistId: 'default', targetPlaylistId: 'user:love', songIds: [2] },
+    ]) {
+      await expect(
+        service.previewCopySongs({
+          userId: 'user-id',
+          expectedSnapshotId: repository.head.id,
+          ...input,
+        }),
+      ).rejects.toMatchObject({
+        statusCode: 409,
+        code: 'PLAYLIST_ID_AMBIGUOUS',
+      })
+    }
     expect(repository.saveCalls).toBe(0)
   })
 

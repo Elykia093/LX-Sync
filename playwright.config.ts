@@ -26,7 +26,7 @@ if (!useMockWebServer) {
   if (process.env.E2E_SKIP_WEBSERVER === '1')
     throw new Error('E2E_SKIP_WEBSERVER is only supported in mock mode')
 }
-const mockWebServerPort = Number(process.env.E2E_MOCK_PORT ?? '9527')
+const mockWebServerPort = Number(process.env.E2E_MOCK_PORT ?? '5174')
 if (
   useMockWebServer &&
   (!Number.isSafeInteger(mockWebServerPort) || mockWebServerPort < 1)

@@ -88,6 +88,36 @@ const playlistUpsertSchema = playlistMutationSchema.extend({
 const playlistSongMutationSchema = playlistMutationSchema.extend({
   affectedSongCount: z.number().int().min(0),
 })
+const playlistSongCopyMutationSchema = playlistSongMutationSchema
+  .extend({
+    addedSongCount: z.number().int().min(0).nullable().default(null),
+    skippedSongCount: z.number().int().min(0).nullable().default(null),
+  })
+  .refine(
+    (result) =>
+      result.addedSongCount === null ||
+      result.skippedSongCount === null ||
+      result.addedSongCount + result.skippedSongCount ===
+        result.affectedSongCount,
+    'Invalid copy result counts',
+  )
+const playlistSongCopyPreviewSchema = playlistMutationSchema
+  .extend({
+    sourcePlaylistId: z.string(),
+    targetPlaylistId: z.string(),
+    requestedSongCount: z.number().int().min(1),
+    addedSongCount: z.number().int().min(0),
+    skippedSongCount: z.number().int().min(0),
+    existingSongIds: z.array(z.union([z.string(), z.number()])),
+  })
+  .refine(
+    (preview) =>
+      preview.addedSongCount + preview.skippedSongCount ===
+        preview.requestedSongCount &&
+      preview.existingSongIds.length === preview.skippedSongCount &&
+      new Set(preview.existingSongIds).size === preview.existingSongIds.length,
+    'Invalid copy preview counts',
+  )
 const auditEventSchema = z.object({
   id: z.string(),
   actor: z.string(),
@@ -113,6 +143,9 @@ export type PlaylistSummary = z.infer<typeof playlistSummarySchema>
 export type PlaylistSong = z.infer<typeof playlistSongSchema>
 export type PlaylistList = z.infer<typeof playlistListSchema>
 export type PlaylistDetail = z.infer<typeof playlistDetailSchema>
+export type PlaylistSongCopyPreview = z.infer<
+  typeof playlistSongCopyPreviewSchema
+>
 export type AuditEvent = z.infer<typeof auditEventSchema>
 export type ManagedSongSource = z.infer<typeof managedSongSourceSchema>
 export type PlaylistQuality = z.infer<typeof playlistQualitySchema>
@@ -135,6 +168,12 @@ export interface PlaylistSongQuery {
   albumName?: string
   offset: number
   limit: number
+}
+
+export interface PlaylistSongTransferInput {
+  targetPlaylistId: string
+  songIds: Array<string | number>
+  expectedSnapshotId: string
 }
 
 export const parseServerStatus = (value: unknown): ServerStatus =>
@@ -232,6 +271,15 @@ export function snapshotExportPath(
   snapshotId: string,
 ): string {
   return `/api/v1/users/${encoded(userId)}/sync-domains/${domain}/snapshots/${encoded(snapshotId)}/export`
+}
+
+export function playlistExportPath(
+  userId: string,
+  playlistId: string,
+  snapshotId: string,
+): string {
+  const search = new URLSearchParams({ snapshotId })
+  return `/api/v1/users/${encoded(userId)}/playlists/${encoded(playlistId)}/export?${search.toString()}`
 }
 
 export function playlistDetailPath(
@@ -361,11 +409,7 @@ export const api = {
   movePlaylistSongs: (
     userId: string,
     playlistId: string,
-    input: {
-      targetPlaylistId: string
-      songIds: Array<string | number>
-      expectedSnapshotId: string
-    },
+    input: PlaylistSongTransferInput,
   ) =>
     request(
       `/users/${encoded(userId)}/playlists/${encoded(playlistId)}/song-moves`,
@@ -375,17 +419,37 @@ export const api = {
   copyPlaylistSongs: (
     userId: string,
     playlistId: string,
-    input: {
-      targetPlaylistId: string
-      songIds: Array<string | number>
-      expectedSnapshotId: string
-    },
+    input: PlaylistSongTransferInput,
   ) =>
     request(
       `/users/${encoded(userId)}/playlists/${encoded(playlistId)}/song-copies`,
-      playlistSongMutationSchema,
+      playlistSongCopyMutationSchema,
       { method: 'POST', body: json(input) },
     ),
+  previewPlaylistSongCopy: (
+    userId: string,
+    playlistId: string,
+    input: PlaylistSongTransferInput,
+    signal?: AbortSignal,
+  ) =>
+    request(
+      `/users/${encoded(userId)}/playlists/${encoded(playlistId)}/song-copy-previews`,
+      playlistSongCopyPreviewSchema.refine(
+        (preview) =>
+          preview.snapshotId === input.expectedSnapshotId &&
+          preview.sourcePlaylistId === playlistId &&
+          preview.targetPlaylistId === input.targetPlaylistId &&
+          preview.requestedSongCount === input.songIds.length &&
+          preview.existingSongIds.every((id) => input.songIds.includes(id)),
+        'Copy preview does not match the requested selection',
+      ),
+      {
+        method: 'POST',
+        body: json(input),
+        ...(signal ? { signal } : {}),
+      },
+    ),
+  playlistExportPath,
   snapshots: (userId: string, domain: 'list' | 'dislike') =>
     request(
       `/users/${encoded(userId)}/sync-domains/${domain}/snapshots`,

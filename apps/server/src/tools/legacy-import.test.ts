@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -7,9 +7,8 @@ import type { ListData } from '../protocol/index.js'
 import { md5 } from '../security/crypto.js'
 import {
   buildLxMusicSyncServerImportPlan,
-  buildLxserverV2ImportPlan,
   ImportValidationError,
-} from './lxserver-v2-import.js'
+} from './legacy-import.js'
 
 const temporaryDirectories: string[] = []
 
@@ -21,130 +20,9 @@ afterEach(async () => {
   )
 })
 
-describe('lxserver v2 import planning', () => {
-  it('validates source hashes and returns only aggregate dry-run evidence', async () => {
-    const fixture = await createSourceFixture()
-    await mkdir(path.join(fixture.source, 'users', 'orphan-directory'))
-
-    const plan = await buildLxserverV2ImportPlan(fixture.source, {
-      maxSnapshots: 10,
-      addMusicLocationType: 'bottom',
-    })
-
-    expect(plan.summary).toEqual({
-      sourceVersion: 2,
-      users: 1,
-      devices: 1,
-      sourceSnapshots: 2,
-      storedSnapshots: 2,
-      baselines: 2,
-      listHeadItems: 2,
-      dislikeHeadItems: 1,
-      orphanUserDirectories: 1,
-    })
-    expect(plan.users[0]?.maxSnapshots).toBe(12)
-    expect(plan.users[0]?.addMusicLocationType).toBe('top')
-    const publicEvidence = JSON.stringify(plan.summary)
-    for (const secret of [
-      fixture.userName,
-      fixture.connectionCode,
-      fixture.clientId,
-      fixture.deviceKey,
-      fixture.serverId,
-      fixture.songName,
-    ])
-      expect(publicEvidence).not.toContain(secret)
-  })
-
-  it('rejects a snapshot whose content no longer matches its source key', async () => {
-    const fixture = await createSourceFixture()
-    const original = JSON.parse(
-      await readFile(fixture.listSnapshotPath, 'utf8'),
-    ) as ListData
-    original.defaultList.push({ id: 'tampered' })
-    await writeFile(fixture.listSnapshotPath, JSON.stringify(original))
-
-    await expect(
-      buildLxserverV2ImportPlan(fixture.source, {
-        maxSnapshots: 10,
-        addMusicLocationType: 'bottom',
-      }),
-    ).rejects.toBeInstanceOf(ImportValidationError)
-  })
-
-  it('rejects source files larger than the LX-Sync wire boundary', async () => {
-    const fixture = await createSourceFixture()
-    const usersPath = path.join(fixture.source, 'users.json')
-    const users = await readFile(usersPath, 'utf8')
-    await writeFile(usersPath, `${users}${' '.repeat(8 * 1024 * 1024)}`)
-
-    await expect(
-      buildLxserverV2ImportPlan(fixture.source, {
-        maxSnapshots: 10,
-        addMusicLocationType: 'bottom',
-      }),
-    ).rejects.toBeInstanceOf(ImportValidationError)
-  })
-
-  it('accepts an initialized source domain that has never created a snapshot', async () => {
-    const fixture = await createSourceFixture()
-    await rm(fixture.dislikeInfoPath)
-    await rm(fixture.dislikeSnapshotPath)
-
-    const plan = await buildLxserverV2ImportPlan(fixture.source, {
-      maxSnapshots: 10,
-      addMusicLocationType: 'bottom',
-    })
-
-    expect(plan.summary).toMatchObject({
-      sourceSnapshots: 1,
-      storedSnapshots: 2,
-      baselines: 1,
-      dislikeHeadItems: 0,
-    })
-  })
-
-  it('rejects case-insensitive duplicate configured users', async () => {
-    const fixture = await createSourceFixture()
-    await writeFile(
-      path.join(fixture.source, 'users.json'),
-      JSON.stringify([
-        { name: fixture.userName, password: fixture.connectionCode },
-        { name: fixture.userName.toUpperCase(), password: 'second-code' },
-      ]),
-    )
-
-    await expect(
-      buildLxserverV2ImportPlan(fixture.source, {
-        maxSnapshots: 10,
-        addMusicLocationType: 'bottom',
-      }),
-    ).rejects.toBeInstanceOf(ImportValidationError)
-  })
-
-  it('rejects duplicate connection credentials that root authentication cannot disambiguate', async () => {
-    const fixture = await createSourceFixture()
-    await writeFile(
-      path.join(fixture.source, 'users.json'),
-      JSON.stringify([
-        { name: fixture.userName, password: fixture.connectionCode },
-        { name: 'second-user', password: fixture.connectionCode },
-      ]),
-    )
-
-    await expect(
-      buildLxserverV2ImportPlan(fixture.source, {
-        maxSnapshots: 10,
-        addMusicLocationType: 'bottom',
-      }),
-    ).rejects.toBeInstanceOf(ImportValidationError)
-  })
-})
-
 describe('lx-music-sync-server import planning', () => {
   it('combines the official data directory with a validated JSON config', async () => {
     const fixture = await createSourceFixture()
-    await rm(path.join(fixture.source, 'users.json'))
     const configPath = path.join(fixture.source, 'official-config.json')
     await writeFile(
       configPath,
@@ -193,6 +71,30 @@ describe('lx-music-sync-server import planning', () => {
       fixture.songName,
     ])
       expect(publicEvidence).not.toContain(secret)
+  })
+
+  it('rejects unknown fields in official JSON users', async () => {
+    const fixture = await createSourceFixture()
+    const configPath = path.join(fixture.source, 'official-config.json')
+    await writeFile(
+      configPath,
+      JSON.stringify({
+        users: [
+          {
+            name: fixture.userName,
+            password: fixture.connectionCode,
+            unsupportedSetting: true,
+          },
+        ],
+      }),
+    )
+
+    await expect(
+      buildLxMusicSyncServerImportPlan(fixture.source, configPath, {
+        maxSnapshots: 10,
+        addMusicLocationType: 'top',
+      }),
+    ).rejects.toThrow(new ImportValidationError())
   })
 
   it('rejects executable config.js input instead of evaluating it', async () => {
@@ -377,17 +279,6 @@ async function createSourceFixture() {
   await writeFile(
     path.join(source, 'serverInfo.json'),
     JSON.stringify({ serverId, version: 2 }),
-  )
-  await writeFile(
-    path.join(source, 'users.json'),
-    JSON.stringify([
-      {
-        name: userName,
-        password: connectionCode,
-        maxSnapshotNum: 12,
-        'list.addMusicLocationType': 'top',
-      },
-    ]),
   )
   await writeFile(
     path.join(userDirectory, 'devices.json'),

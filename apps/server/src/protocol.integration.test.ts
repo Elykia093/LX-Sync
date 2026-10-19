@@ -664,6 +664,329 @@ describeWithDatabase.sequential('LX v4 protocol with PostgreSQL', () => {
     expect(JSON.stringify(additionAudit)).not.toContain('186016')
   }, 30_000)
 
+  it('keeps playlist exports and copy previews read-only while copies retain CAS, audit, and delivery', async () => {
+    const managedConnectionCode = 'playlist-copy-integration-code'
+    const managedUser = await repository.createUser({
+      name: 'playlist-copy-integration',
+      authKey: fixtureDeriveConnectionKey(managedConnectionCode),
+      maxSnapshots: 10,
+      addMusicLocationType: 'bottom',
+    })
+    const initialHead = await repository.getHead('list', managedUser.id)
+    const sourceSongs: MusicInfo[] = [
+      { id: 2, name: 'Numeric source', meta: { retained: 'numeric' } },
+      { id: '2', name: 'String source', meta: { retained: 'string' } },
+      { id: 'fresh', name: 'Fresh source', customField: { nested: [0, true] } },
+    ]
+    const targetSong: MusicInfo = {
+      id: 2,
+      name: 'Existing target',
+      meta: { retained: 'target' },
+    }
+    const targetMetadata = {
+      id: 'target',
+      name: '  Original target  ',
+      source: 'wy' as const,
+      sourceListId: 'original-remote-list',
+      locationUpdateTime: 123,
+      extension: { original: ['retained'] },
+    }
+    const seededHead = await repository.saveSnapshot({
+      userId: managedUser.id,
+      domain: 'list',
+      expectedSnapshotId: initialHead.id,
+      data: {
+        defaultList: sourceSongs,
+        loveList: [],
+        userList: [{ ...targetMetadata, list: [targetSong] }],
+      },
+      playlistQualityUpdate: { playlistId: 'target', quality: 'hires' },
+    })
+    const dislikeHead = await repository.getHead('dislike', managedUser.id)
+    const client = await connectClient({
+      origin,
+      connectionCode: managedConnectionCode,
+      deviceName: 'Copy Preview Integration',
+      list: seededHead.data,
+      dislike: dislikeHead.data,
+    })
+    clients.push(client)
+    await client.initialized
+    client.state.receivedListActions.length = 0
+
+    const synchronizedHead = await repository.getHead('list', managedUser.id)
+    expect(synchronizedHead.data).toEqual(seededHead.data)
+    expect(client.state.list).toEqual(synchronizedHead.data)
+
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      headers: { origin: publicOrigin },
+      payload: { username: 'admin', password: 'integration-admin-password' },
+    })
+    expect(login.statusCode).toBe(200)
+    const setCookie = login.headers['set-cookie']
+    if (typeof setCookie !== 'string')
+      throw new Error('Expected an integration session')
+    const headers = {
+      origin: publicOrigin,
+      cookie: setCookie.split(';')[0] ?? '',
+    }
+    const basePath = `/api/v1/users/${managedUser.id}/playlists/default`
+    const exportPath = `/api/v1/users/${managedUser.id}/playlists/user%3Atarget/export`
+    const payload = {
+      targetPlaylistId: 'user:target',
+      songIds: [2, '2', 'fresh'],
+      expectedSnapshotId: synchronizedHead.id,
+    }
+    const beforeSnapshots = await repository.listSnapshots(
+      managedUser.id,
+      'list',
+    )
+    const beforeAudits = await repository.listAudit(200)
+    const beforeBaseline = await repository.getDeviceSnapshot(
+      'list',
+      managedUser.id,
+      client.device.clientId,
+    )
+    const beforeHeadRow = await database
+      .selectFrom('syncHeads')
+      .selectAll()
+      .where('userId', '=', managedUser.id)
+      .where('domain', '=', 'list')
+      .executeTakeFirstOrThrow()
+
+    const preview = await app.inject({
+      method: 'POST',
+      url: `${basePath}/song-copy-previews`,
+      headers,
+      payload,
+    })
+    expect(preview.statusCode).toBe(200)
+    expect(preview.json()).toEqual({
+      snapshotId: synchronizedHead.id,
+      snapshotCreatedAt: synchronizedHead.createdAt.toISOString(),
+      sourcePlaylistId: 'default',
+      targetPlaylistId: 'user:target',
+      requestedSongCount: 3,
+      addedSongCount: 2,
+      skippedSongCount: 1,
+      existingSongIds: [2],
+    })
+
+    const exported = await app.inject({
+      method: 'GET',
+      url: `${exportPath}?snapshotId=${seededHead.id}`,
+      headers,
+    })
+    expect(exported.statusCode).toBe(200)
+    expect(exported.headers['content-disposition']).toBe(
+      'attachment; filename="lx-sync-playlist.json"',
+    )
+    expect(exported.headers['cache-control']).toBe('no-store')
+    expect(exported.json()).toEqual({
+      format: 'lx-sync.playlist',
+      version: 1,
+      userId: managedUser.id,
+      snapshotId: seededHead.id,
+      snapshotCreatedAt: seededHead.createdAt.toISOString(),
+      playlist: {
+        id: 'user:target',
+        type: 'user',
+        name: targetMetadata.name.trim(),
+        songCount: 1,
+        metadata: targetMetadata,
+      },
+      songs: [targetSong],
+    })
+    expect(await repository.getPlaylistQualities(managedUser.id)).toEqual(
+      new Map([['target', 'hires']]),
+    )
+    expect(await repository.getHead('list', managedUser.id)).toEqual(
+      synchronizedHead,
+    )
+    expect(await repository.listSnapshots(managedUser.id, 'list')).toEqual(
+      beforeSnapshots,
+    )
+    expect(await repository.listAudit(200)).toEqual(beforeAudits)
+    expect(
+      await repository.getDeviceSnapshot(
+        'list',
+        managedUser.id,
+        client.device.clientId,
+      ),
+    ).toEqual(beforeBaseline)
+    expect(
+      await database
+        .selectFrom('syncHeads')
+        .selectAll()
+        .where('userId', '=', managedUser.id)
+        .where('domain', '=', 'list')
+        .executeTakeFirstOrThrow(),
+    ).toEqual(beforeHeadRow)
+    expect(client.state.receivedListActions).toEqual([])
+
+    for (const url of [
+      `/api/v1/users/${userId}/playlists/default/export?snapshotId=${seededHead.id}`,
+      `${exportPath}?snapshotId=${dislikeHead.id}`,
+    ]) {
+      const denied = await app.inject({ method: 'GET', url, headers })
+      expect(denied.statusCode).toBe(404)
+      expect(denied.json().code).toBe('SNAPSHOT_NOT_FOUND')
+    }
+    const unauthorized = await app.inject({
+      method: 'GET',
+      url: `${exportPath}?snapshotId=${seededHead.id}`,
+    })
+    expect(unauthorized.statusCode).toBe(401)
+    expect(unauthorized.json().code).toBe('AUTH_INVALID')
+
+    const concurrent = await Promise.all([
+      app.inject({
+        method: 'POST',
+        url: `${basePath}/song-copies`,
+        headers,
+        payload,
+      }),
+      app.inject({
+        method: 'POST',
+        url: `${basePath}/song-copies`,
+        headers,
+        payload,
+      }),
+    ])
+    expect(concurrent.map((response) => response.statusCode).sort()).toEqual([
+      200, 409,
+    ])
+    const copied = concurrent.find((response) => response.statusCode === 200)
+    const conflict = concurrent.find((response) => response.statusCode === 409)
+    if (!copied || !conflict)
+      throw new Error('Expected one copy and one CAS conflict')
+    expect(conflict.json().code).toBe('SNAPSHOT_CONFLICT')
+    const copyBody = copied.json<{
+      snapshotId: string
+      affectedSongCount: number
+      addedSongCount: number
+      skippedSongCount: number
+    }>()
+    expect(copyBody).toMatchObject({
+      affectedSongCount: 3,
+      addedSongCount: 2,
+      skippedSongCount: 1,
+    })
+    const copiedHead = await repository.getHead('list', managedUser.id)
+    expect(copiedHead.id).toBe(copyBody.snapshotId)
+    expect(copiedHead.data.defaultList).toEqual(sourceSongs)
+    expect(copiedHead.data.userList[0]).toEqual({
+      ...targetMetadata,
+      list: [targetSong, sourceSongs[1], sourceSongs[2]],
+    })
+    expect(client.state.list).toEqual(copiedHead.data)
+    expect(client.state.receivedListActions).toEqual([
+      {
+        action: 'list_music_add',
+        data: {
+          id: 'target',
+          musicInfos: sourceSongs,
+          addMusicLocationType: 'bottom',
+        },
+      },
+    ])
+    expect(
+      (
+        await repository.getDeviceSnapshot(
+          'list',
+          managedUser.id,
+          client.device.clientId,
+        )
+      )?.id,
+    ).toBe(copiedHead.id)
+
+    const stalePreview = await app.inject({
+      method: 'POST',
+      url: `${basePath}/song-copy-previews`,
+      headers,
+      payload,
+    })
+    expect(stalePreview.statusCode).toBe(409)
+    expect(stalePreview.json().code).toBe('SNAPSHOT_CONFLICT')
+    const historical = await app.inject({
+      method: 'GET',
+      url: `${exportPath}?snapshotId=${seededHead.id}`,
+      headers,
+    })
+    expect(historical.statusCode).toBe(200)
+    expect(historical.json()).toEqual(exported.json())
+
+    const currentPayload = { ...payload, expectedSnapshotId: copiedHead.id }
+    const duplicatePreview = await app.inject({
+      method: 'POST',
+      url: `${basePath}/song-copy-previews`,
+      headers,
+      payload: currentPayload,
+    })
+    expect(duplicatePreview.statusCode).toBe(200)
+    expect(duplicatePreview.json()).toMatchObject({
+      requestedSongCount: 3,
+      addedSongCount: 0,
+      skippedSongCount: 3,
+      existingSongIds: [2, '2', 'fresh'],
+    })
+    const duplicateCopy = await app.inject({
+      method: 'POST',
+      url: `${basePath}/song-copies`,
+      headers,
+      payload: currentPayload,
+    })
+    expect(duplicateCopy.statusCode).toBe(200)
+    expect(duplicateCopy.json()).toMatchObject({
+      snapshotId: copiedHead.id,
+      affectedSongCount: 3,
+      addedSongCount: 0,
+      skippedSongCount: 3,
+    })
+    const finalHead = await repository.getHead('list', managedUser.id)
+    expect(finalHead).toEqual(copiedHead)
+    expect(await repository.listSnapshots(managedUser.id, 'list')).toHaveLength(
+      beforeSnapshots.length + 1,
+    )
+    const finalHeadRow = await database
+      .selectFrom('syncHeads')
+      .selectAll()
+      .where('userId', '=', managedUser.id)
+      .where('domain', '=', 'list')
+      .executeTakeFirstOrThrow()
+    expect(finalHeadRow.version).toBe(beforeHeadRow.version + 2)
+    expect(client.state.receivedListActions).toHaveLength(2)
+    expect(client.state.receivedListActions[1]).toEqual(
+      client.state.receivedListActions[0],
+    )
+    expect(
+      (
+        await repository.getDeviceSnapshot(
+          'list',
+          managedUser.id,
+          client.device.clientId,
+        )
+      )?.id,
+    ).toBe(finalHead.id)
+    const copyAudits = (await repository.listAudit(200)).filter(
+      (event) =>
+        event.action === 'playlist.songs.copy' &&
+        event.targetId === managedUser.id,
+    )
+    expect(copyAudits).toHaveLength(2)
+    for (const audit of copyAudits) {
+      expect(audit.metadata).toEqual({
+        domain: 'list',
+        affectedPlaylistCount: 1,
+        affectedSongCount: 3,
+      })
+      expect(JSON.stringify(audit)).not.toContain('Numeric source')
+      expect(JSON.stringify(audit)).not.toContain('original-remote-list')
+    }
+  }, 30_000)
+
   it('rolls back snapshot, head, and baseline when a transactional step fails', async () => {
     const user = await repository.createUser({
       name: 'rollback-user',

@@ -47,13 +47,15 @@ JSON 请求体为空或语法无效时返回 `400 INVALID_JSON`；请求体超�
 | DELETE | `/api/v1/users/:userId/devices/:clientId` | 无 | `204`（幂等撤销） | 400, 401, 403, 404 |
 | GET | `/api/v1/users/:userId/playlists` | 无 | `200 { snapshotId, snapshotCreatedAt, data: PlaylistSummary[] }` | 400, 401, 404, 409 |
 | GET | `/api/v1/users/:userId/playlists/:playlistId` | 必填 `snapshotId`（UUID）；可选 `q`、`singer`、`albumName`（各最大 256 字符）、`source`（`kw/kg/tx/wy/mg`）、`offset`（默认 0、最大 10000）、`limit`（默认 50、最大 100） | `200 { snapshotId, snapshotCreatedAt, playlist, offset, limit, total, data: PlaylistSong[] }` | 400, 401, 404, 409 |
+| GET | `/api/v1/users/:userId/playlists/:playlistId/export` | 必填 `snapshotId`（UUID），不接受其他查询参数 | `200` JSON attachment（`lx-sync.playlist` v1） | 400, 401, 404, 409 |
 | POST | `/api/v1/users/:userId/playlists` | `{ name, expectedSnapshotId }` | `201 { snapshotId, snapshotCreatedAt, playlist }` | 400, 401, 403, 404, 409, 413 |
 | PATCH | `/api/v1/users/:userId/playlists/:playlistId` | `{ name, quality?, expectedSnapshotId }`，`quality` 可选为七档音质值或 `null` | `200 { snapshotId, snapshotCreatedAt, playlist }` | 400, 401, 403, 404, 409, 413 |
 | DELETE | `/api/v1/users/:userId/playlists/:playlistId` | `{ expectedSnapshotId }` | `200 { snapshotId, snapshotCreatedAt }` | 400, 401, 403, 404, 409, 413 |
 | POST | `/api/v1/users/:userId/playlists/:playlistId/songs` | `{ id, source, name, singer, albumName?, interval?, expectedSnapshotId }` | `201 { snapshotId, snapshotCreatedAt, affectedSongCount: 1 }` | 400, 401, 403, 404, 409, 413 |
 | DELETE | `/api/v1/users/:userId/playlists/:playlistId/songs` | `{ songIds, expectedSnapshotId }` | `200 { snapshotId, snapshotCreatedAt, affectedSongCount }` | 400, 401, 403, 404, 409, 413 |
 | POST | `/api/v1/users/:userId/playlists/:playlistId/song-moves` | `{ targetPlaylistId, songIds, expectedSnapshotId }` | `200 { snapshotId, snapshotCreatedAt, affectedSongCount }` | 400, 401, 403, 404, 409, 413 |
-| POST | `/api/v1/users/:userId/playlists/:playlistId/song-copies` | `{ targetPlaylistId, songIds, expectedSnapshotId }` | `200 { snapshotId, snapshotCreatedAt, affectedSongCount }` | 400, 401, 403, 404, 409, 413 |
+| POST | `/api/v1/users/:userId/playlists/:playlistId/song-copy-previews` | `{ targetPlaylistId, songIds, expectedSnapshotId }` | `200 { snapshotId, snapshotCreatedAt, sourcePlaylistId, targetPlaylistId, requestedSongCount, addedSongCount, skippedSongCount, existingSongIds }` | 400, 401, 403, 404, 409, 413 |
+| POST | `/api/v1/users/:userId/playlists/:playlistId/song-copies` | `{ targetPlaylistId, songIds, expectedSnapshotId }` | `200 { snapshotId, snapshotCreatedAt, affectedSongCount, addedSongCount, skippedSongCount }` | 400, 401, 403, 404, 409, 413 |
 | GET | `/api/v1/users/:userId/sync-domains/:domain/snapshots` | `limit`，默认 50、最大 100 | `200 { data: Snapshot[] }` | 400, 401, 404 |
 | GET | `/api/v1/users/:userId/sync-domains/:domain/snapshots/:snapshotId/export` | 无 | `200` JSON attachment（`lx-sync.snapshot` v1） | 400, 401, 404 |
 | POST | `/api/v1/users/:userId/sync-domains/:domain/snapshots/:snapshotId/restorations` | 无 | `201 { snapshotId }` + `Location` | 400, 401, 403, 404 |
@@ -75,6 +77,10 @@ JSON 请求体为空或语法无效时返回 `400 INVALID_JSON`；请求体超�
 
 `songIds` 是非空且元素唯一的数组，每个元素允许为 JSON `string | number`；请求数组自身包含重复值时返回 `400 VALIDATION_FAILED`。服务端从 `expectedSnapshotId` 对应的当前 head 中恢复完整 `MusicInfo`，不信任客户端提交的歌曲对象；任一歌曲在来源歌单不存在时返回 `404 SONG_NOT_FOUND`，同一请求 ID 在来源歌单命中多首歌曲时返回 `409 SONG_ID_AMBIGUOUS`。移动和复制的 `targetPlaylistId` 使用与摘要相同的歌单 ID，目标不存在时同样返回 `404 PLAYLIST_NOT_FOUND`；来源与目标相同则返回 `409 PLAYLIST_TARGET_INVALID`。`affectedSongCount` 等于校验通过的请求歌曲数。
 
+复制预览使用同源管理会话和精确 `Origin` 校验，请求体与正式复制一致：只接受 `targetPlaylistId`、`songIds`、`expectedSnapshotId`，`songIds` 最多 10,000 项，请求体最多 1 MiB。服务端在用户级串行任务内读取当前 head，校验用户、来源和目标歌单、歌曲 ID、容量及 `expectedSnapshotId`，沿用正式复制的错误码；head 已变化时返回 `409 SNAPSHOT_CONFLICT`。预览不保存快照、不写入业务审计、不广播、不推进设备 baseline。它仅描述响应中 `snapshotId` 对应数据的预计结果，不预留容量，也不能替代正式复制时的 head 校验和 PostgreSQL CAS。
+
+预览中的 `sourcePlaylistId` 和 `targetPlaylistId` 使用管理 API ID；`requestedSongCount` 等于请求歌曲数。`addedSongCount` 是目标歌单中尚不存在的歌曲数，`skippedSongCount` 是已存在而跳过的歌曲数，两者之和等于 `requestedSongCount`。`existingSongIds` 按请求顺序列出目标已有的 ID，保持 JSON 类型，数字 `2` 与字符串 `"2"` 分别判断，不按歌名或平台合并。正式复制在自己的用户级串行任务内重新计算并返回 `addedSongCount`、`skippedSongCount`，原 `affectedSongCount` 仍表示请求歌曲数；新增、移除和移动歌曲的响应结构保持不变。即使全部歌曲已经存在，正式复制仍沿用已有快照保存、审计和广播语义。
+
 写接口沿用管理 Cookie、精确 `Origin` 校验、strict 请求 schema、Problem JSON 和 `Cache-Control: no-store`。每次成功写入都在同一 PostgreSQL 事务中锁定对应 head 行、执行 CAS、写入或复用内容相同的不可变快照、切换 head、按保留策略裁剪快照并写入审计；业务写入与审计要么同时成功，要么同时回滚。审计 action 分别为 `playlist.create`、`playlist.rename`、`playlist.update`、`playlist.delete`、`playlist.songs.add`、`playlist.songs.remove`、`playlist.songs.move` 和 `playlist.songs.copy`。`playlist.update` 用于管理端替换歌单首选音质。审计 metadata 只能包含 `domain`、`affectedSongCount` 等受控域信息和计数，不包含歌名、歌曲或歌单原始 ID，也不包含客户端 payload。
 
 歌单更新使用 `PATCH /api/v1/users/:userId/playlists/:playlistId`，请求体示例：
@@ -92,6 +98,49 @@ JSON 请求体为空或语法无效时返回 `400 INVALID_JSON`；请求体超�
 快照保存成功后，服务端在同一用户级串行任务内向该用户所有已完成 `list` 初始化且已就绪的在线连接广播。每个客户端确认接收后才推进该设备 baseline；离线、未就绪或发送失败的设备不推进，发送失败的连接会被关闭。
 
 快照导出仅接受已登录管理会话，并严格绑定用户、同步域和快照 ID。响应使用 `Content-Disposition: attachment`，内容格式为 `lx-sync.snapshot` v1，包含快照元数据和同步域数据。导出是只读操作，不改变当前 head、设备基线或快照保留计数；导出文件包含同步数据，不应公开分享。
+
+### 单歌单导出
+
+`GET /api/v1/users/:userId/playlists/:playlistId/export?snapshotId=<uuid>` 从指定用户 `list` 域的不可变快照中导出一个完整歌单。仅接受必填的 `snapshotId` 查询参数；缺失、非法 UUID、重复参数或任何搜索/分页参数均返回 `400 VALIDATION_FAILED`。用户、快照或歌单不存在分别返回 `404 USER_NOT_FOUND`、`404 SNAPSHOT_NOT_FOUND`、`404 PLAYLIST_NOT_FOUND`；快照属于其他用户或同步域时同样返回 `SNAPSHOT_NOT_FOUND`。自建歌单原始 ID 重复时返回 `409 PLAYLIST_ID_AMBIGUOUS`，内置歌单与 `user:default`、`user:love` 可独立读取。
+
+响应为 `application/json; charset=utf-8`，使用固定的 `Content-Disposition: attachment; filename="lx-sync-playlist.json"`，不将歌单名称或原始 ID 拼入响应头。与其他管理接口一样，它要求有效管理 Cookie，返回 `Cache-Control: no-store`，未登录返回 `401 AUTH_INVALID`。导出不受页面当前的搜索、筛选或分页影响，不切换到最新 head，也不写入快照、审计或设备 baseline。
+
+导出文件结构为：
+
+```json
+{
+  "format": "lx-sync.playlist",
+  "version": 1,
+  "userId": "00000000-0000-4000-8000-000000000001",
+  "snapshotId": "00000000-0000-4000-8000-000000000020",
+  "snapshotCreatedAt": "2026-09-08T00:00:00.000Z",
+  "playlist": {
+    "id": "user:focus",
+    "type": "user",
+    "name": "专注歌单",
+    "songCount": 1,
+    "metadata": {
+      "id": "focus",
+      "name": "专注歌单",
+      "source": "wy",
+      "sourceListId": "123",
+      "locationUpdateTime": null
+    }
+  },
+  "songs": [
+    {
+      "id": "song-1",
+      "name": "示例歌曲",
+      "source": "wy",
+      "meta": { "songId": "song-1", "albumName": "示例专辑" }
+    }
+  ]
+}
+```
+
+以上顶层字段均必填。`format` 和 `version` 固定为上述值；`userId`、`snapshotId` 为 UUID，`snapshotCreatedAt` 为 RFC 3339 UTC 时间。`playlist.id` 是管理 API ID，`type` 为 `default`、`love` 或 `user`，`name` 与管理摘要的展示名称一致，`songCount` 等于 `songs.length`。自建歌单的 `metadata` 原样保留快照内歌单除 `list` 外的全部字段，包括原始 `id`、未裁剪的名称、来源信息和扩展 metadata；内置歌单没有独立元数据对象，因此该字段为 `null`。`songs` 按原顺序保存完整 `MusicInfo[]`，包含原始 `string | number` ID 及所有歌曲扩展 metadata，不使用详情页的精简投影。
+
+单歌单导出仅包含 LX 快照数据，不叠加管理端当前的首选音质，不添加 `playlist.quality`。歌曲数受既有快照合计 10,000 首上限约束，接口为同步只读下载，没有后台导出任务或第三方回源。新增导出/预览接口和复制计数字段向后兼容，现有移动、移除、新增及 LX wire 契约不变；回滚时应同时回滚管理端入口和服务端代码，无数据库迁移。验证覆盖指定历史快照、完整 metadata、类型敏感去重、旧 head 冲突、容量、未登录、跨用户/域、未知参数和安全文件名；本地测试不代表生产性能或发布验证。
 
 访问码必须是非空字符串。服务端不裁剪内容，也不设置字符集或字段级长度限制；空格、符号和 Unicode 均按原样参与密钥派生。整个 JSON 请求仍受 1 MiB 请求体上限约束。访问码只在请求中短暂出现，服务端仅保存其派生密钥的 AES-256-GCM 密文；API、日志和审计记录均不回显访问码。
 
